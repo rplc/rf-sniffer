@@ -2,77 +2,84 @@
 
 #define GDO0_PIN D2
 
-volatile uint16_t pulses[256];
-volatile uint8_t pulseCount = 0;
-volatile uint32_t lastMicros = 0;
-volatile bool frameReady = false;
+// === Doppelpuffer ===
+volatile unsigned int captureBuffer[512];
+volatile int captureCount = 0;
+volatile bool captureDone = false;
+volatile unsigned long lastChange = 0;
 
-void ICACHE_RAM_ATTR isr() {
-    uint32_t now = micros();
+unsigned int printBuffer[512];
+int printCount = 0;
 
-    if (lastMicros == 0) {
-        lastMicros = now;
-        return;
+void ICACHE_RAM_ATTR signalChange() {
+  unsigned long now = micros();
+
+  if (lastChange == 0) {
+    lastChange = now;
+    return;
+  }
+
+  unsigned int duration = (unsigned int)(now - lastChange);
+  lastChange = now;
+
+  // Sehr kurze Pulse ignorieren (Rauschen / Bouncing)
+  if (duration < 100) return;
+
+  if (!captureDone) {
+    if (captureCount < 512) {
+      captureBuffer[captureCount++] = duration;
     }
-
-    uint32_t dur = now - lastMicros;
-    lastMicros = now;
-
-    // Müll raus
-    if (dur < 150) return;
-    if (dur > 100000) {
-        pulseCount = 0;
-        return;
+    // Paketende: großes Gap oder Puffer voll
+    if (duration > 10000 || captureCount >= 511) {
+      captureDone = true;
     }
-
-    // Frame-Gap erkannt
-    if (dur > 10000 && pulseCount > 20) {
-        frameReady = true;
-        return;
-    }
-
-    if (pulseCount < 256) {
-        pulses[pulseCount++] = dur;
-    }
+  }
 }
 
 void setup() {
-    Serial.begin(115200);
+  Serial.begin(921600);
 
-    ELECHOUSE_cc1101.Init();
-    ELECHOUSE_cc1101.setMHZ(303.875);
-    ELECHOUSE_cc1101.setModulation(2);
-    ELECHOUSE_cc1101.setRxBW(270.0);
-    ELECHOUSE_cc1101.setDRate(4.8);
-    ELECHOUSE_cc1101.SetRx();
+  if (!ELECHOUSE_cc1101.getCC1101()) {
+    Serial.println("CC1101 nicht gefunden!");
+    while (1);
+  }
 
-    pinMode(GDO0_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(GDO0_PIN), isr, CHANGE);
+  ELECHOUSE_cc1101.Init();
+  ELECHOUSE_cc1101.setMHZ(303.875);
+  ELECHOUSE_cc1101.setModulation(2); // OOK
+  ELECHOUSE_cc1101.setRxBW(200.0);
+  ELECHOUSE_cc1101.SetRx();
 
-    Serial.println("Ready");
+  pinMode(GDO0_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(GDO0_PIN), signalChange, CHANGE);
+
+  Serial.println("Sniffer bereit...");
 }
 
 void loop() {
-    if (frameReady) {
-        noInterrupts();
+  if (captureDone) {
+    // Puffer so schnell wie möglich umkopieren, dann Interrupts wieder frei
+    noInterrupts();
+    printCount = captureCount;
+    memcpy(printBuffer, (const void*)captureBuffer, captureCount * sizeof(unsigned int));
+    captureCount = 0;
+    captureDone = false;
+    lastChange = 0;
+    interrupts();
 
-        Serial.println("FRAME:");
-
-        for (int i = 0; i < pulseCount; i++) {
-            if (pulses[i] < 560) Serial.print("S ");
-            else if (pulses[i] < 900) Serial.print("M ");
-            else Serial.print("L ");
-            Serial.print(" ");
-        }
-
-        Serial.println();
-        Serial.println("---");
-
-        pulseCount = 0;
-        frameReady = false;
-
-        interrupts();
+    // Jetzt außerhalb von noInterrupts() ausgeben
+    Serial.println("=== SIGNAL ===");
+    for (int i = 0; i < printCount; i++) {
+      Serial.print(printBuffer[i]);
+      Serial.print(' ');
     }
+    Serial.println();
+    Serial.print("Pulse: ");
+    Serial.println(printCount);
+    Serial.println("=============");
+  }
+
+  yield(); // ESP8266 Watchdog bedienen
 }
 
 void sendRaw(uint16_t *buf, int len) {
