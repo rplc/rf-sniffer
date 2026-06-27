@@ -5,11 +5,13 @@
 // === Doppelpuffer ===
 volatile unsigned int captureBuffer[512];
 volatile int captureCount = 0;
+volatile int captureRssi = 0;
 volatile bool captureDone = false;
 volatile unsigned long lastChange = 0;
 
 unsigned int printBuffer[512];
 int printCount = 0;
+int printRssi = 0;
 
 void ICACHE_RAM_ATTR signalChange() {
   unsigned long now = micros();
@@ -31,6 +33,7 @@ void ICACHE_RAM_ATTR signalChange() {
     }
     // Paketende: großes Gap oder Puffer voll
     if (duration > 10000 || captureCount >= 511) {
+      captureRssi = ELECHOUSE_cc1101.getRssi();
       captureDone = true;
     }
   }
@@ -45,7 +48,7 @@ void setup() {
   }
 
   ELECHOUSE_cc1101.Init();
-  ELECHOUSE_cc1101.setMHZ(303.875);
+  ELECHOUSE_cc1101.setMHZ(303.95); // TODO frequez fine tunen, rssi beobachten
   ELECHOUSE_cc1101.setModulation(2); // OOK
   ELECHOUSE_cc1101.setRxBW(200.0);
   ELECHOUSE_cc1101.SetRx();
@@ -61,8 +64,10 @@ void loop() {
     // Puffer so schnell wie möglich umkopieren, dann Interrupts wieder frei
     noInterrupts();
     printCount = captureCount;
+    printRssi = captureRssi;
     memcpy(printBuffer, (const void*)captureBuffer, captureCount * sizeof(unsigned int));
     captureCount = 0;
+    captureRssi = 0;
     captureDone = false;
     lastChange = 0;
     interrupts();
@@ -76,6 +81,8 @@ void loop() {
     Serial.println();
     Serial.print("Pulse: ");
     Serial.println(printCount);
+    Serial.print("RSSI: ");
+    Serial.println(printRssi);
     Serial.println("=============");
   }
 
