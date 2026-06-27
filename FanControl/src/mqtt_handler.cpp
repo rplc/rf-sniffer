@@ -8,14 +8,13 @@
 
 struct FanConfig {
     const char* topic;        // MQTT-Topic für Kommandos (eingehend)
-    const char* stateTopic;   // MQTT-Topic für State-Updates (ausgehend, von RF-Remote)
     uint8_t     id[2];
 };
 
 static const FanConfig FANS[] = {
-    { MQTT_TOPIC_WZ_TISCH, MQTT_TOPIC_WZ_TISCH "/state", REMOTE_ID_WZ_TISCH },
-    { MQTT_TOPIC_WZ_COUCH, MQTT_TOPIC_WZ_COUCH "/state", REMOTE_ID_WZ_COUCH },
-    { MQTT_TOPIC_SZ,       MQTT_TOPIC_SZ       "/state", REMOTE_ID_SZ        },
+    { MQTT_TOPIC_WZ_TISCH, REMOTE_ID_WZ_TISCH },
+    { MQTT_TOPIC_WZ_COUCH, REMOTE_ID_WZ_COUCH },
+    { MQTT_TOPIC_SZ,       REMOTE_ID_SZ       },
 };
 static constexpr uint8_t FAN_COUNT = sizeof(FANS) / sizeof(FANS[0]);
 
@@ -78,10 +77,10 @@ static void onRfFrame(const uint8_t remoteId[2], uint8_t cmd) {
     if (!cmdToPayload(cmd, payload, sizeof(payload))) return;
 
     Serial.printf("[RX] Remote %02X%02X → %s : %s\n",
-                  remoteId[0], remoteId[1], fan->stateTopic, payload);
+                  remoteId[0], remoteId[1], fan->topic, payload);
 
     if (s_client && s_client->connected()) {
-        s_client->publish(fan->stateTopic, payload, /*retain=*/false);
+        s_client->publish(fan->topic, payload, /*retain=*/false);
     }
 }
 
