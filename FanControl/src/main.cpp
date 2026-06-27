@@ -4,9 +4,11 @@
 #include "config.h"
 #include "rf_sender.h"
 #include "mqtt_handler.h"
+#include "OTA.h"
 
 WiFiClient   wifiClient;
 PubSubClient mqttClient(wifiClient);
+OTASetup ota;
 
 // ─── WiFi ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +31,7 @@ void setup() {
     Serial.println("\n=== Fan RF Controller ===");
 
     wifiConnect();
+    ota.init();
 
     if (!rfSenderInit()) {
         Serial.println("[BOOT] CC1101-Fehler - Neustart in 10s");
@@ -47,4 +50,5 @@ void loop() {
     }
 
     mqttLoop(mqttClient);
+    ota.handle();
 }

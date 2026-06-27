@@ -1,0 +1,11 @@
+[secrets]
+wifi_ssid     = ""
+wifi_pw       = ""
+ota_pw        = ""
+mqtt_broker   = ""
+mqtt_port     = ""
+mqtt_user     = ""
+mqtt_password = ""
+
+[env:fanControlOTA]
+upload_port = 192.168...
