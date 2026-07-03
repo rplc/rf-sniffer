@@ -1,35 +1,32 @@
 #include "rf_receiver.h"
+#include "rf_sender.h"
 #include "config.h"
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 
 // ─── Timing-Toleranzen ───────────────────────────────────────────────────────
-// Werte aus Captures: Header ~4520µs, Bit0 ~580µs, Bit1 ~1710µs, Sep ~540µs
-// Toleranz ±30 % für robuste Dekodierung bei schwachem Signal
+static constexpr uint32_t HEADER_MIN   = 3000;
+static constexpr uint32_t HEADER_MAX   = 6000;
+static constexpr uint32_t BIT_ONE_MIN  =  900;
+static constexpr uint32_t BIT_ZERO_MIN =  300;
+static constexpr uint32_t BIT_MAX      = 2500;
+static constexpr uint32_t GAP_MIN      = 10000;
 
-static constexpr uint16_t HEADER_MIN  = 3500;
-static constexpr uint16_t HEADER_MAX  = 5500;
-static constexpr uint16_t BIT_SEP_MAX =  900;   // LOW-Puls: Bit-Separator
-static constexpr uint16_t BIT_ONE_MIN =  900;   // HIGH-Puls: Bit=1 wenn > 900µs
-static constexpr uint16_t BIT_ZERO_MIN=  350;   // HIGH-Puls: Bit=0 wenn 350-900µs
-static constexpr uint16_t GAP_MIN     = 10000;  // Frame-Ende (langer LOW-Puls)
-
-// ─── ISR-Buffer ──────────────────────────────────────────────────────────────
-// Double-Buffer: ISR schreibt in einen, Loop liest aus dem anderen
-
-static constexpr uint8_t  MAX_PULSES  = 72;     // 2 + 32*2 + 1 Echtpulse + Reserve
+// ─── ISR-Buffer (Double-Buffer) ──────────────────────────────────────────────
+static constexpr uint8_t MAX_PULSES = 40;
 
 struct PulseBuffer {
-    volatile uint16_t pulses[MAX_PULSES];
+    volatile uint32_t pulses[MAX_PULSES];
     volatile uint8_t  count;
-    volatile bool     ready;   // vollständiger Frame vorhanden
+    volatile bool     ready;
 };
 
-static PulseBuffer s_buf[2];
-static volatile uint8_t s_writeIdx = 0;   // ISR schreibt hier
+static PulseBuffer       s_buf[2];
+static volatile uint8_t  s_writeIdx = 0;
 static volatile uint32_t s_lastEdge = 0;
-static volatile bool s_inFrame = false;
+static volatile bool     s_inFrame  = false;
 
 static RfRxCallback s_callback = nullptr;
+static bool         s_rxActive = false;
 
 // ─── ISR ─────────────────────────────────────────────────────────────────────
 
@@ -38,78 +35,75 @@ void IRAM_ATTR rfPulseISR() {
     const uint32_t diff = now - s_lastEdge;
     s_lastEdge = now;
 
-    const bool pinHigh = digitalRead(CC1101_GDO0_PIN);  // aktueller Pegel NACH Flanke
+    // ESP32: direktes GPIO-Register-Read (schneller als digitalRead, ISR-sicher)
+    // GPIO_REG_READ(GPIO_IN_REG) für Pins 0-31
+    const bool pinHigh = (GPIO_REG_READ(GPIO_IN_REG) >> CC1101_GDO0_PIN) & 0x01;
 
-    // --- Flanke LOW→HIGH: war ein LOW-Puls (Separator oder Gap) ----------------
     if (pinHigh) {
-        if (!s_inFrame) {
-            // Noch kein Frame aktiv – ignorieren
-            return;
-        }
-        // Frame-Gap: langer LOW-Puls → Frame abgeschlossen
-        if (diff >= GAP_MIN) {
+        // Steigende Flanke → war ein LOW-Puls
+        if (s_inFrame && diff >= GAP_MIN) {
             PulseBuffer& wb = s_buf[s_writeIdx];
-            if (wb.count >= 34) {   // mind. Header + 32 Datenpulse
-                wb.ready = true;
-                s_writeIdx ^= 1;    // auf anderen Buffer wechseln
+            if (wb.count >= 33) {
+                wb.ready   = true;
+                s_writeIdx ^= 1;
                 s_buf[s_writeIdx].count = 0;
                 s_buf[s_writeIdx].ready = false;
             }
             s_inFrame = false;
         }
-        // normaler Separator – ignorieren (wir messen nur HIGH-Pulse)
-        return;
-    }
-
-    // --- Flanke HIGH→LOW: war ein HIGH-Puls (Header oder Daten-Bit) -----------
-    if (diff >= HEADER_MIN && diff <= HEADER_MAX) {
-        // Header erkannt → neuen Frame starten
-        PulseBuffer& wb = s_buf[s_writeIdx];
-        wb.count = 0;
-        wb.ready = false;
-        wb.pulses[wb.count++] = (uint16_t)diff;
-        s_inFrame = true;
-        return;
-    }
-
-    if (!s_inFrame) return;
-
-    PulseBuffer& wb = s_buf[s_writeIdx];
-    if (wb.count < MAX_PULSES) {
-        wb.pulses[wb.count++] = (uint16_t)diff;
+        // kurzer LOW-Puls (Separator) → ignorieren
     } else {
-        // Überlauf → Frame verwerfen
-        s_inFrame = false;
-        wb.count = 0;
+        // Fallende Flanke → war ein HIGH-Puls
+        if (diff >= HEADER_MIN && diff <= HEADER_MAX) {
+            // Header → Frame starten
+            PulseBuffer& wb = s_buf[s_writeIdx];
+            wb.count        = 0;
+            wb.ready        = false;
+            wb.pulses[0]    = diff;
+            wb.count        = 1;
+            s_inFrame       = true;
+        } else if (s_inFrame && diff >= BIT_ZERO_MIN && diff <= BIT_MAX) {
+            // Datenbit
+            PulseBuffer& wb = s_buf[s_writeIdx];
+            if (wb.count < MAX_PULSES) {
+                wb.pulses[wb.count++] = diff;
+            } else {
+                s_inFrame = false;
+            }
+        } else if (s_inFrame) {
+            // Ungültiger Puls → Frame verwerfen
+            s_inFrame = false;
+            s_buf[s_writeIdx].count = 0;
+        }
     }
 }
 
 // ─── Frame dekodieren ────────────────────────────────────────────────────────
 
-static bool decodeFrame(const uint16_t* pulses, uint8_t count,
+static bool decodeFrame(const uint32_t* pulses, uint8_t count,
                         uint8_t outId[2], uint8_t& outCmd) {
-    // Erwartet: [Header, Bit0_high, Bit1_high, ..., Bit31_high]  (33 HIGH-Pulse)
-    // (LOW-Pulse/Separatoren werden im ISR nicht gespeichert)
-    if (count < 33) return false;
+    if (count < 33) {
+        Serial.printf("[RX] Zu wenig Pulse: %d\n", count);
+        return false;
+    }
 
-    uint8_t bytes[4] = {0, 0, 0, 0};
+    uint8_t bytes[4] = {};
     for (uint8_t i = 0; i < 32; i++) {
-        const uint16_t p = pulses[1 + i];   // pulses[0] = Header
+        const uint32_t p = pulses[1 + i];
         bool bit;
-        if (p >= BIT_ONE_MIN) {
-            bit = true;
-        } else if (p >= BIT_ZERO_MIN) {
-            bit = false;
-        } else {
-            return false;   // ungültiger Puls
+        if      (p >= BIT_ONE_MIN  && p <= BIT_MAX)    bit = true;
+        else if (p >= BIT_ZERO_MIN && p < BIT_ONE_MIN) bit = false;
+        else {
+            Serial.printf("[RX] Ungültiger Puls Bit%d: %uµs\n", i, (unsigned)p);
+            return false;
         }
         const uint8_t byteIdx = i / 8;
-        const uint8_t bitPos  = 7 - (i % 8);   // MSB first
+        const uint8_t bitPos  = 7 - (i % 8);
         if (bit) bytes[byteIdx] |= (1 << bitPos);
     }
 
-    // Checksumme: B3 == ~B2
     if (bytes[3] != (uint8_t)(~bytes[2])) {
+        Serial.printf("[RX] Checksum fail: B2=0x%02X B3=0x%02X\n", bytes[2], bytes[3]);
         return false;
     }
 
@@ -121,55 +115,50 @@ static bool decodeFrame(const uint16_t* pulses, uint8_t count,
 
 // ─── RX-Modus ein-/ausschalten ───────────────────────────────────────────────
 
-static bool s_rxActive = false;
-
 void rfReceiverEnterRx() {
+    rfConfigRx();  // CC1101-Register + SetRx()
     if (s_rxActive) return;
-    ELECHOUSE_cc1101.SetRx();
     pinMode(CC1101_GDO0_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(CC1101_GDO0_PIN), rfPulseISR, CHANGE);
     s_inFrame  = false;
+    s_lastEdge = micros();
+    // ESP32: Pin-Nummer == Interrupt-Nummer, kein digitalPinToInterrupt() nötig
+    attachInterrupt(CC1101_GDO0_PIN, rfPulseISR, CHANGE);
     s_rxActive = true;
+    Serial.println("[RX] RX aktiv");
 }
 
 void rfReceiverLeaveRx() {
     if (!s_rxActive) return;
-    detachInterrupt(digitalPinToInterrupt(CC1101_GDO0_PIN));
+    detachInterrupt(CC1101_GDO0_PIN);
     s_rxActive = false;
-    // Aufrufer schaltet anschließend in TX und setzt GDO0 als OUTPUT
 }
 
 // ─── Öffentliche API ─────────────────────────────────────────────────────────
 
 void rfReceiverInit(RfRxCallback callback) {
     s_callback = callback;
-    s_buf[0].count = 0; s_buf[0].ready = false;
-    s_buf[1].count = 0; s_buf[1].ready = false;
+    s_buf[0]   = {};
+    s_buf[1]   = {};
     s_writeIdx = 0;
-    rfReceiverEnterRx();
-    Serial.println("[RX] Empfänger aktiv");
 }
 
 void rfReceiverLoop() {
-    // Lese-Buffer: immer der, in den ISR gerade NICHT schreibt
     const uint8_t readIdx = s_writeIdx ^ 1;
-    PulseBuffer& rb = s_buf[readIdx];
+    PulseBuffer&  rb      = s_buf[readIdx];
 
     if (!rb.ready) return;
 
-    // Lokale Kopie anlegen, dann Buffer freigeben
-    uint16_t pulses[MAX_PULSES];
+    uint32_t pulses[MAX_PULSES];
     uint8_t  count;
     noInterrupts();
     count = rb.count;
-    memcpy(pulses, (const void*)rb.pulses, count * sizeof(uint16_t));
+    memcpy(pulses, (const void*)rb.pulses, count * sizeof(uint32_t));
     rb.ready = false;
     interrupts();
 
     uint8_t id[2], cmd;
     if (decodeFrame(pulses, count, id, cmd)) {
+        Serial.printf("[RX] OK: ID=%02X%02X CMD=0x%02X\n", id[0], id[1], cmd);
         if (s_callback) s_callback(id, cmd);
-    } else {
-        Serial.printf("[RX] Frame verworfen (count=%d)\n", count);
     }
 }

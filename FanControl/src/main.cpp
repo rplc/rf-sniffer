@@ -1,16 +1,16 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
+#include <SPI.h>
 #include <PubSubClient.h>
 #include "config.h"
 #include "rf_sender.h"
+#include "rf_receiver.h"
 #include "mqtt_handler.h"
 #include "OTA.h"
 
 WiFiClient   wifiClient;
 PubSubClient mqttClient(wifiClient);
 OTASetup ota;
-
-// ─── WiFi ─────────────────────────────────────────────────────────────────────
 
 static void wifiConnect() {
     Serial.printf("\n[WiFi] Verbinde mit %s", WIFI_SSID);
@@ -20,35 +20,32 @@ static void wifiConnect() {
         delay(500);
         Serial.print('.');
     }
-    Serial.printf("\n[WiFi] Verbunden - IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("\n[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
 }
-
-// ─── Setup / Loop ─────────────────────────────────────────────────────────────
 
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.println("\n=== Fan RF Controller ===");
+    Serial.println("\n=== Fan RF Controller (ESP32) ===");
 
     wifiConnect();
     ota.init();
 
     if (!rfSenderInit()) {
-        Serial.println("[BOOT] CC1101-Fehler - Neustart in 10s");
+        Serial.println("[BOOT] CC1101 Fehler - Neustart in 10s");
         delay(10000);
         ESP.restart();
     }
 
     mqttInit(mqttClient);
+    rfReceiverEnterRx();
 }
 
 void loop() {
-    // WiFi-Reconnect
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[WiFi] Verbindung verloren - reconnect...");
+        Serial.println("[WiFi] Verbindung verloren – reconnect...");
         wifiConnect();
     }
-
     mqttLoop(mqttClient);
     ota.handle();
 }
