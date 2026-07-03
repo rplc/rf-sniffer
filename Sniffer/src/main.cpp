@@ -1,6 +1,6 @@
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 
-#define GDO0_PIN D2
+#define GDO0_PIN 22
 
 // === Doppelpuffer ===
 volatile unsigned int captureBuffer[512];
@@ -42,13 +42,16 @@ void ICACHE_RAM_ATTR signalChange() {
 void setup() {
   Serial.begin(921600);
 
+  ELECHOUSE_cc1101.setSpiPin(18, 19, 23, 21);
+  ELECHOUSE_cc1101.setGDO0(GDO0_PIN);
+  ELECHOUSE_cc1101.Init();
+
   if (!ELECHOUSE_cc1101.getCC1101()) {
     Serial.println("CC1101 nicht gefunden!");
     while (1);
   }
 
-  ELECHOUSE_cc1101.Init();
-  ELECHOUSE_cc1101.setMHZ(303.95); // TODO frequez fine tunen, rssi beobachten
+  ELECHOUSE_cc1101.setMHZ(433.92); // TODO frequez fine tunen, rssi beobachten
   ELECHOUSE_cc1101.setModulation(2); // OOK
   ELECHOUSE_cc1101.setRxBW(200.0);
   ELECHOUSE_cc1101.SetRx();
