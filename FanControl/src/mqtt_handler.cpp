@@ -162,13 +162,18 @@ static void onMqttMessage(const char* topic, uint8_t* payload, unsigned int leng
     }
     if (!fan) return;
 
-    StaticJsonDocument<128> doc;
-    if (deserializeJson(doc, payload, length)) {
-        Serial.println("[MQTT] JSON-Fehler");
+    // Payload null-terminieren für sicheres Logging und Parsing
+    char payloadStr[256] = {};
+    size_t copyLen = min((unsigned int)length, (unsigned int)sizeof(payloadStr) - 1);
+    memcpy(payloadStr, payload, copyLen);
+    Serial.printf("[MQTT] %s → %s\n", topic, payloadStr);
+
+    StaticJsonDocument<256> doc;
+    DeserializationError jsonErr = deserializeJson(doc, payloadStr);
+    if (jsonErr) {
+        Serial.printf("[MQTT] JSON-Fehler: %s\n", jsonErr.c_str());
         return;
     }
-
-    Serial.printf("[MQTT] %s → %.*s\n", topic, length, (char*)payload);
 
     bool isDimmer, dimmerStop;
     uint8_t cmd = resolveCmd(doc, isDimmer, dimmerStop);
@@ -196,7 +201,7 @@ static void onMqttMessage(const char* topic, uint8_t* payload, unsigned int leng
 static void reconnect() {
     while (!s_client->connected()) {
         Serial.print("[MQTT] Verbinde...");
-        String clientId = "fan-ctrl-" + String(ESP.getChipId(), HEX);
+        String clientId = "fan-ctrl";
         bool ok = (strlen(MQTT_USER) > 0)
                 ? s_client->connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD)
                 : s_client->connect(clientId.c_str());
@@ -218,7 +223,7 @@ static void reconnect() {
 
 void mqttInit(PubSubClient& client) {
     s_client = &client;
-    client.setServer(MQTT_BROKER, MQTT_PORT);
+    client.setServer(MQTT_BROKER, 1883);
     client.setCallback(onMqttMessage);
     rfReceiverInit(onRfFrame);   // RX-Modus starten und Callback registrieren
 }

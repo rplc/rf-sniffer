@@ -43,7 +43,7 @@ void setup() {
 
 void loop() {
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[WiFi] Verbindung verloren – reconnect...");
+        Serial.println("[WiFi] Verbindung verloren - reconnect...");
         wifiConnect();
     }
     mqttLoop(mqttClient);

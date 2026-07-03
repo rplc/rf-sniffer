@@ -14,8 +14,8 @@
 #define CC1101_SCK_PIN   18
 #define CC1101_MISO_PIN  19
 #define CC1101_MOSI_PIN  23
-#define CC1101_CS_PIN    22
-#define CC1101_GDO0_PIN  21
+#define CC1101_CS_PIN    21
+#define CC1101_GDO0_PIN  22
 
 // ─── RF-Timing (µs, gemittelt aus Captures, n>250) ───────────────────────────
 #define RF_FREQ_MHZ      433.92

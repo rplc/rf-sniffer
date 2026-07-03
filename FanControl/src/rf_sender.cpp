@@ -4,57 +4,59 @@
 #include <SPI.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 
-static void cc1101WriteReg(uint8_t addr, uint8_t val) {
-    digitalWrite(CC1101_CS_PIN, LOW);
-    delayMicroseconds(2);
-    SPI.transfer(addr);
-    SPI.transfer(val);
-    digitalWrite(CC1101_CS_PIN, HIGH);
-    delayMicroseconds(2);
+// ─── CC1101 SPI-Zugriff über SmartRC-interne Methode ─────────────────────────
+// ELECHOUSE_cc1101.SpiWriteReg() ist public in der Lib – wir nutzen es direkt
+// statt eigenem SPI.transfer(), um Bus-Konflikte zu vermeiden.
+
+static void regWrite(uint8_t addr, uint8_t val) {
+    ELECHOUSE_cc1101.SpiWriteReg(addr, val);
 }
 
-static uint8_t cc1101ReadReg(uint8_t addr) {
-    digitalWrite(CC1101_CS_PIN, LOW);
-    delayMicroseconds(2);
-    SPI.transfer(addr | 0x80);
-    uint8_t val = SPI.transfer(0x00);
-    digitalWrite(CC1101_CS_PIN, HIGH);
-    delayMicroseconds(2);
-    return val;
+static uint8_t regRead(uint8_t addr) {
+    return ELECHOUSE_cc1101.SpiReadReg(addr);
 }
+
+// Register-Adressen (eigener Prefix, kein Konflikt mit Lib-Makros)
+static constexpr uint8_t REG_IOCFG0   = 0x02;
+static constexpr uint8_t REG_PKTCTRL0 = 0x08;
+static constexpr uint8_t REG_MDMCFG2  = 0x12;
+static constexpr uint8_t REG_FREND0   = 0x22;
 
 // ─── TX/RX Registerkonfiguration ─────────────────────────────────────────────
 
 static void configTx() {
-    cc1101WriteReg(CC1101_IOCFG0,   0x2E);  // GDO0 = High-Z → wir steuern als Output
-    cc1101WriteReg(CC1101_PKTCTRL0, 0x12);  // Async serial TX
-    cc1101WriteReg(CC1101_MDMCFG2,  0x30);  // OOK, kein Sync-Word
-    cc1101WriteReg(CC1101_FREND0,   0x11);  // PA-Table: 0=OFF, 1=max Power
+    regWrite(REG_IOCFG0,   0x2E);  // GDO0 = High-Z (wir steuern manuell als Output)
+    regWrite(REG_PKTCTRL0, 0x12);  // Async serial TX mode
+    regWrite(REG_MDMCFG2,  0x30);  // OOK, no sync word, no preamble
+    regWrite(REG_FREND0,   0x11);  // PA table: index0=off, index1=max power
     ELECHOUSE_cc1101.SetTx();
+    delayMicroseconds(100);         // CC1101 Settling-Zeit nach Moduswechsel
     pinMode(CC1101_GDO0_PIN, OUTPUT);
     digitalWrite(CC1101_GDO0_PIN, LOW);
 }
 
 void rfConfigRx() {
-    cc1101WriteReg(CC1101_IOCFG0,   0x0D);  // GDO0 = demodulierter OOK-Datenstrom
-    cc1101WriteReg(CC1101_PKTCTRL0, 0x30);  // Async serial RX
-    cc1101WriteReg(CC1101_MDMCFG2,  0x30);  // OOK, kein Sync-Word
+    regWrite(REG_IOCFG0,   0x0D);  // GDO0 = demodulierter OOK-Datenstrom (async)
+    regWrite(REG_PKTCTRL0, 0x30);  // Async serial RX mode
+    regWrite(REG_MDMCFG2,  0x30);  // OOK, no sync word
     ELECHOUSE_cc1101.SetRx();
+    delayMicroseconds(100);
     pinMode(CC1101_GDO0_PIN, INPUT);
 }
 
 // ─── Initialisierung ─────────────────────────────────────────────────────────
 
 bool rfSenderInit() {
-    // ESP32 VSPI mit expliziten Pins initialisieren
     SPI.begin(CC1101_SCK_PIN, CC1101_MISO_PIN, CC1101_MOSI_PIN, CC1101_CS_PIN);
     pinMode(CC1101_CS_PIN, OUTPUT);
     digitalWrite(CC1101_CS_PIN, HIGH);
+    delay(10);
 
     ELECHOUSE_cc1101.setSpiPin(CC1101_SCK_PIN, CC1101_MISO_PIN,
                                 CC1101_MOSI_PIN, CC1101_CS_PIN);
     ELECHOUSE_cc1101.setGDO0(CC1101_GDO0_PIN);
     ELECHOUSE_cc1101.Init();
+    delay(10);  // CC1101 nach Reset stabil lassen
 
     if (!ELECHOUSE_cc1101.getCC1101()) {
         Serial.println("[RF] CC1101 nicht gefunden – SPI prüfen");
@@ -63,15 +65,20 @@ bool rfSenderInit() {
 
     ELECHOUSE_cc1101.setMHZ(RF_FREQ_MHZ);
     ELECHOUSE_cc1101.setModulation(2);   // OOK/ASK
-    ELECHOUSE_cc1101.setPA(12);          // max. TX-Leistung
+    ELECHOUSE_cc1101.setPA(12);
+    delay(5);
 
-    uint8_t iocfg = cc1101ReadReg(CC1101_IOCFG0);
-    Serial.printf("[RF] CC1101 OK @ %.2f MHz | IOCFG0=0x%02X\n", RF_FREQ_MHZ, iocfg);
+    // Sanity-Check: IOCFG0 sollte nach Init 0x3F sein (Default)
+    uint8_t iocfg = regRead(REG_IOCFG0);
+    Serial.printf("[RF] CC1101 OK @ %.2f MHz | IOCFG0=0x%02X (erwartet 0x3F)\n",
+                  RF_FREQ_MHZ, iocfg);
+    if (iocfg == 0x00) {
+        Serial.println("[RF] WARNUNG: IOCFG0=0x00 – SPI-Verbindung prüfen!");
+    }
     return true;
 }
 
 // ─── Low-Level Puls-Ausgabe ──────────────────────────────────────────────────
-// IRAM_ATTR: Funktion liegt im IRAM → kein Cache-Miss während noInterrupts()
 
 static inline void IRAM_ATTR txHigh(uint32_t us) {
     digitalWrite(CC1101_GDO0_PIN, HIGH);
@@ -106,8 +113,6 @@ void rfSend(const uint8_t id[2], uint8_t cmd, uint8_t repeat) {
     rfReceiverLeaveRx();
     configTx();
 
-    // Auf ESP32: portDISABLE_INTERRUPTS() statt noInterrupts() für Core-0-Interrupts
-    // noInterrupts() funktioniert aber ebenfalls auf dem aktuellen Core
     noInterrupts();
     for (uint8_t i = 0; i < repeat; i++) {
         sendFrame(id, cmd);

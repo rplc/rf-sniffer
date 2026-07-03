@@ -35,9 +35,8 @@ void IRAM_ATTR rfPulseISR() {
     const uint32_t diff = now - s_lastEdge;
     s_lastEdge = now;
 
-    // ESP32: direktes GPIO-Register-Read (schneller als digitalRead, ISR-sicher)
-    // GPIO_REG_READ(GPIO_IN_REG) für Pins 0-31
-    const bool pinHigh = (GPIO_REG_READ(GPIO_IN_REG) >> CC1101_GDO0_PIN) & 0x01;
+    // digitalRead ist auf ESP32 im IRAM-Kontext korrekt nutzbar
+    const bool pinHigh = digitalRead(CC1101_GDO0_PIN);
 
     if (pinHigh) {
         // Steigende Flanke → war ein LOW-Puls
@@ -51,19 +50,17 @@ void IRAM_ATTR rfPulseISR() {
             }
             s_inFrame = false;
         }
-        // kurzer LOW-Puls (Separator) → ignorieren
+        // kurzer LOW-Separator → ignorieren
     } else {
         // Fallende Flanke → war ein HIGH-Puls
         if (diff >= HEADER_MIN && diff <= HEADER_MAX) {
-            // Header → Frame starten
             PulseBuffer& wb = s_buf[s_writeIdx];
-            wb.count        = 0;
-            wb.ready        = false;
-            wb.pulses[0]    = diff;
-            wb.count        = 1;
-            s_inFrame       = true;
+            wb.count     = 0;
+            wb.ready     = false;
+            wb.pulses[0] = diff;
+            wb.count     = 1;
+            s_inFrame    = true;
         } else if (s_inFrame && diff >= BIT_ZERO_MIN && diff <= BIT_MAX) {
-            // Datenbit
             PulseBuffer& wb = s_buf[s_writeIdx];
             if (wb.count < MAX_PULSES) {
                 wb.pulses[wb.count++] = diff;
@@ -116,12 +113,10 @@ static bool decodeFrame(const uint32_t* pulses, uint8_t count,
 // ─── RX-Modus ein-/ausschalten ───────────────────────────────────────────────
 
 void rfReceiverEnterRx() {
-    rfConfigRx();  // CC1101-Register + SetRx()
+    rfConfigRx();
     if (s_rxActive) return;
-    pinMode(CC1101_GDO0_PIN, INPUT);
     s_inFrame  = false;
     s_lastEdge = micros();
-    // ESP32: Pin-Nummer == Interrupt-Nummer, kein digitalPinToInterrupt() nötig
     attachInterrupt(CC1101_GDO0_PIN, rfPulseISR, CHANGE);
     s_rxActive = true;
     Serial.println("[RX] RX aktiv");
