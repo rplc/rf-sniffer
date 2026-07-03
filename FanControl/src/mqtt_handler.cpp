@@ -14,7 +14,7 @@ struct FanConfig {
 static const FanConfig FANS[] = {
     { MQTT_TOPIC_WZ_TISCH, REMOTE_ID_WZ_TISCH },
     { MQTT_TOPIC_WZ_COUCH, REMOTE_ID_WZ_COUCH },
-    { MQTT_TOPIC_SZ,       REMOTE_ID_SZ       },
+    { MQTT_TOPIC_SZ,       REMOTE_ID_SZ        },
 };
 static constexpr uint8_t FAN_COUNT = sizeof(FANS) / sizeof(FANS[0]);
 

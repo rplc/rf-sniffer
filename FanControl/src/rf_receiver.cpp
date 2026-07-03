@@ -1,7 +1,7 @@
 #include "rf_receiver.h"
 #include "rf_sender.h"
 #include "config.h"
-#include <ELECHOUSE_CC1101_SRC_DRV.h>
+#include <SmartRC_CC1101.h>
 
 // ─── Timing-Toleranzen ───────────────────────────────────────────────────────
 static constexpr uint32_t HEADER_MIN   = 3000;
@@ -11,7 +11,7 @@ static constexpr uint32_t BIT_ZERO_MIN =  300;
 static constexpr uint32_t BIT_MAX      = 2500;
 static constexpr uint32_t GAP_MIN      = 10000;
 
-// ─── ISR-Buffer (Double-Buffer) ──────────────────────────────────────────────
+// ─── ISR Double-Buffer ───────────────────────────────────────────────────────
 static constexpr uint8_t MAX_PULSES = 40;
 
 struct PulseBuffer {
@@ -35,11 +35,9 @@ void IRAM_ATTR rfPulseISR() {
     const uint32_t diff = now - s_lastEdge;
     s_lastEdge = now;
 
-    // digitalRead ist auf ESP32 im IRAM-Kontext korrekt nutzbar
     const bool pinHigh = digitalRead(CC1101_GDO0_PIN);
 
     if (pinHigh) {
-        // Steigende Flanke → war ein LOW-Puls
         if (s_inFrame && diff >= GAP_MIN) {
             PulseBuffer& wb = s_buf[s_writeIdx];
             if (wb.count >= 33) {
@@ -50,9 +48,7 @@ void IRAM_ATTR rfPulseISR() {
             }
             s_inFrame = false;
         }
-        // kurzer LOW-Separator → ignorieren
     } else {
-        // Fallende Flanke → war ein HIGH-Puls
         if (diff >= HEADER_MIN && diff <= HEADER_MAX) {
             PulseBuffer& wb = s_buf[s_writeIdx];
             wb.count     = 0;
@@ -68,7 +64,6 @@ void IRAM_ATTR rfPulseISR() {
                 s_inFrame = false;
             }
         } else if (s_inFrame) {
-            // Ungültiger Puls → Frame verwerfen
             s_inFrame = false;
             s_buf[s_writeIdx].count = 0;
         }
@@ -94,9 +89,7 @@ static bool decodeFrame(const uint32_t* pulses, uint8_t count,
             Serial.printf("[RX] Ungültiger Puls Bit%d: %uµs\n", i, (unsigned)p);
             return false;
         }
-        const uint8_t byteIdx = i / 8;
-        const uint8_t bitPos  = 7 - (i % 8);
-        if (bit) bytes[byteIdx] |= (1 << bitPos);
+        bytes[i / 8] |= (bit << (7 - (i % 8)));
     }
 
     if (bytes[3] != (uint8_t)(~bytes[2])) {
@@ -110,11 +103,13 @@ static bool decodeFrame(const uint32_t* pulses, uint8_t count,
     return true;
 }
 
-// ─── RX-Modus ein-/ausschalten ───────────────────────────────────────────────
+// ─── RX-Modus ────────────────────────────────────────────────────────────────
 
 void rfReceiverEnterRx() {
-    rfConfigRx();
+    // CC1101 in RX-Modus (SmartRC setzt IOCFG0 korrekt)
+    ELECHOUSE_cc1101.SetRx();
     if (s_rxActive) return;
+    pinMode(CC1101_GDO0_PIN, INPUT);
     s_inFrame  = false;
     s_lastEdge = micros();
     attachInterrupt(CC1101_GDO0_PIN, rfPulseISR, CHANGE);

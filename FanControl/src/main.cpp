@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <SPI.h>
 #include <PubSubClient.h>
 #include "config.h"
 #include "rf_sender.h"
@@ -36,6 +35,12 @@ void setup() {
         delay(10000);
         ESP.restart();
     }
+
+    delay(2000);
+    const uint8_t id[] = { 0x17, 0x1D };
+    Serial.println("[TEST] Sende Speed1...");
+    rfSend(id, 0x10, 5);
+    Serial.println("[TEST] Fertig");
 
     mqttInit(mqttClient);
     rfReceiverEnterRx();

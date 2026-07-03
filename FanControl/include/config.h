@@ -9,15 +9,15 @@
 #define REMOTE_ID_WZ_COUCH  { 0x17, 0x1D }
 #define REMOTE_ID_SZ        { 0x9A, 0xA7 }
 
-// ─── CC1101 Pins (ESP32) ─────────────────────────────────────────────────────
-// Hardware-SPI Bus 2 (VSPI): SCK=18, MISO=19, MOSI=23
+// ─── CC1101 + ESP32 Pins ─────────────────────────────────────────────────────
+// SPI (Hardware VSPI)
 #define CC1101_SCK_PIN   18
 #define CC1101_MISO_PIN  19
 #define CC1101_MOSI_PIN  23
 #define CC1101_CS_PIN    21
 #define CC1101_GDO0_PIN  22
 
-// ─── RF-Timing (µs, gemittelt aus Captures, n>250) ───────────────────────────
+// ─── RF-Timing (µs) ──────────────────────────────────────────────────────────
 #define RF_FREQ_MHZ      433.92
 
 #define RF_HEADER_HIGH   4500
