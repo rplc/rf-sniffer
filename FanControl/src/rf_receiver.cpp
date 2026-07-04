@@ -3,16 +3,26 @@
 #include "config.h"
 #include <SmartRC_CC1101.h>
 
-// ─── Timing-Toleranzen ───────────────────────────────────────────────────────
-static constexpr uint32_t HEADER_MIN   = 3000;
-static constexpr uint32_t HEADER_MAX   = 6000;
-static constexpr uint32_t BIT_ONE_MIN  =  900;
-static constexpr uint32_t BIT_ZERO_MIN =  300;
-static constexpr uint32_t BIT_MAX      = 2500;
-static constexpr uint32_t GAP_MIN      = 10000;
+// ─── Timing-Toleranzen (±40%) ────────────────────────────────────────────────
+// Protokoll: Bit im LOW-Puls, HIGH = konstanter Marker (~560µs)
+// Header HIGH: ~8120µs → Fenster 5000-12000µs
+// LOW Bit-0:   ~560µs  → < 900µs
+// LOW Bit-1:  ~1680µs  → >= 900µs
+// Frame-Gap:  ~20000µs → > 10000µs
+
+static constexpr uint32_t HEADER_HIGH_MIN = 5000;
+static constexpr uint32_t HEADER_HIGH_MAX = 12000;
+static constexpr uint32_t BIT_THRESHOLD   =  900;   // LOW >= 900µs → Bit 1
+static constexpr uint32_t BIT_MIN         =  200;   // LOW >= 200µs → gültiges Bit
+static constexpr uint32_t BIT_MAX         = 3000;   // LOW <= 3000µs → gültiges Bit
+static constexpr uint32_t GAP_MIN         = 10000;  // LOW > 10ms → Frame-Ende
 
 // ─── ISR Double-Buffer ───────────────────────────────────────────────────────
-static constexpr uint8_t MAX_PULSES = 40;
+// Wir speichern nur LOW-Pulse (die Bit-Information)
+// plus den Header-HIGH zur Frame-Erkennung
+// Format: Bit31=1 → war HIGH-Puls, Bit31=0 → war LOW-Puls
+
+static constexpr uint8_t MAX_PULSES = 80;
 
 struct PulseBuffer {
     volatile uint32_t pulses[MAX_PULSES];
@@ -37,8 +47,25 @@ void IRAM_ATTR rfPulseISR() {
 
     const bool pinHigh = digitalRead(CC1101_GDO0_PIN);
 
-    if (pinHigh) {
-        if (s_inFrame && diff >= GAP_MIN) {
+    if (!pinHigh) {
+        // Fallende Flanke → war HIGH-Puls
+        if (diff >= HEADER_HIGH_MIN && diff <= HEADER_HIGH_MAX) {
+            // Header erkannt → Frame starten
+            PulseBuffer& wb = s_buf[s_writeIdx];
+            wb.count     = 0;
+            wb.ready     = false;
+            wb.pulses[0] = diff | 0x80000000;  // Header HIGH markieren
+            wb.count     = 1;
+            s_inFrame    = true;
+        } else if (s_inFrame) {
+            // HIGH-Marker (ignorieren, Bit-Info steckt im nachfolgenden LOW)
+        }
+    } else {
+        // Steigende Flanke → war LOW-Puls
+        if (!s_inFrame) return;
+
+        if (diff >= GAP_MIN) {
+            // Frame-Gap → Frame abschließen
             PulseBuffer& wb = s_buf[s_writeIdx];
             if (wb.count >= 33) {
                 wb.ready   = true;
@@ -47,23 +74,18 @@ void IRAM_ATTR rfPulseISR() {
                 s_buf[s_writeIdx].ready = false;
             }
             s_inFrame = false;
-        }
-    } else {
-        if (diff >= HEADER_MIN && diff <= HEADER_MAX) {
-            PulseBuffer& wb = s_buf[s_writeIdx];
-            wb.count     = 0;
-            wb.ready     = false;
-            wb.pulses[0] = diff;
-            wb.count     = 1;
-            s_inFrame    = true;
-        } else if (s_inFrame && diff >= BIT_ZERO_MIN && diff <= BIT_MAX) {
+        } else if (diff >= BIT_MIN && diff <= BIT_MAX) {
+            // Bit-LOW → speichern
             PulseBuffer& wb = s_buf[s_writeIdx];
             if (wb.count < MAX_PULSES) {
-                wb.pulses[wb.count++] = diff;
+                wb.pulses[wb.count++] = diff;  // LOW-Puls (kein High-Bit gesetzt)
             } else {
                 s_inFrame = false;
             }
-        } else if (s_inFrame) {
+        } else if (diff < BIT_MIN) {
+            // Zu kurz → Rauschen, ignorieren
+        } else {
+            // Ungültig → Frame verwerfen
             s_inFrame = false;
             s_buf[s_writeIdx].count = 0;
         }
@@ -74,6 +96,8 @@ void IRAM_ATTR rfPulseISR() {
 
 static bool decodeFrame(const uint32_t* pulses, uint8_t count,
                         uint8_t outId[2], uint8_t& outCmd) {
+    // pulses[0] = Header HIGH (mit 0x80000000 markiert)
+    // pulses[1..32] = 32 LOW-Pulse (Bit-Werte)
     if (count < 33) {
         Serial.printf("[RX] Zu wenig Pulse: %d\n", count);
         return false;
@@ -81,14 +105,8 @@ static bool decodeFrame(const uint32_t* pulses, uint8_t count,
 
     uint8_t bytes[4] = {};
     for (uint8_t i = 0; i < 32; i++) {
-        const uint32_t p = pulses[1 + i];
-        bool bit;
-        if      (p >= BIT_ONE_MIN  && p <= BIT_MAX)    bit = true;
-        else if (p >= BIT_ZERO_MIN && p < BIT_ONE_MIN) bit = false;
-        else {
-            Serial.printf("[RX] Ungültiger Puls Bit%d: %uµs\n", i, (unsigned)p);
-            return false;
-        }
+        uint32_t low = pulses[1 + i] & 0x7FFFFFFF;
+        bool bit = (low >= BIT_THRESHOLD);
         bytes[i / 8] |= (bit << (7 - (i % 8)));
     }
 
@@ -106,10 +124,8 @@ static bool decodeFrame(const uint32_t* pulses, uint8_t count,
 // ─── RX-Modus ────────────────────────────────────────────────────────────────
 
 void rfReceiverEnterRx() {
-    // CC1101 in RX-Modus (SmartRC setzt IOCFG0 korrekt)
-    ELECHOUSE_cc1101.SetRx();
+    rfConfigRx();
     if (s_rxActive) return;
-    pinMode(CC1101_GDO0_PIN, INPUT);
     s_inFrame  = false;
     s_lastEdge = micros();
     attachInterrupt(CC1101_GDO0_PIN, rfPulseISR, CHANGE);

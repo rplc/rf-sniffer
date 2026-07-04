@@ -3,7 +3,6 @@ wifi_ssid     = ""
 wifi_pw       = ""
 ota_pw        = ""
 mqtt_broker   = ""
-mqtt_port     = ""
 mqtt_user     = ""
 mqtt_password = ""
 

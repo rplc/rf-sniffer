@@ -36,12 +36,6 @@ void setup() {
         ESP.restart();
     }
 
-    delay(2000);
-    const uint8_t id[] = { 0x17, 0x1D };
-    Serial.println("[TEST] Sende Speed1...");
-    rfSend(id, 0x10, 5);
-    Serial.println("[TEST] Fertig");
-
     mqttInit(mqttClient);
     rfReceiverEnterRx();
 }
