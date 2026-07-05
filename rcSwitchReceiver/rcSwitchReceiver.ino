@@ -25,7 +25,7 @@ void setup() {
   Serial.println("Connection Error");
   }
 
-  myRadio.setMHZ(433.92);
+  myRadio.setMHZ(433.90);
 
 
   mySwitch.enableReceive(22);
