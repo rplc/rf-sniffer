@@ -5,7 +5,11 @@
 #include <rom/ets_sys.h>
 
 void rfConfigRx() {
+    // MDMCFG2 muss auch für RX gesetzt sein (OOK ohne Sync-Word)
+    // sonst filtert CC1101 den Datenstrom auf GDO0 weg
+    ELECHOUSE_cc1101.SpiWriteReg(0x12, 0x30);
     ELECHOUSE_cc1101.SetRx();
+    delayMicroseconds(200);
     pinMode(CC1101_GDO0_PIN, INPUT);
 }
 

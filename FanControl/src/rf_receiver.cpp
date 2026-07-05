@@ -36,59 +36,79 @@ static volatile uint32_t s_lastEdge = 0;
 static volatile bool     s_inFrame  = false;
 
 static RfRxCallback s_callback = nullptr;
+static volatile uint32_t s_isrCount      = 0;
+static volatile uint32_t s_maxHighSeen   = 0;
+static volatile uint8_t  s_lastFrameCount = 0;  // Pulse im letzten unvollständigen Frame
+static volatile uint32_t s_lastGapDur   = 0;
+static volatile uint8_t  s_maxFrameCount = 0;
+static volatile uint8_t  s_lastBitLow = 0;
 static bool         s_rxActive = false;
 
 // ─── ISR ─────────────────────────────────────────────────────────────────────
+
+// ─── ISR (einzelner CHANGE-Interrupt) ────────────────────────────────────────
+// ESP32 unterstützt nur einen Interrupt pro Pin.
+// Pegel wird via direktem GPIO-Register gelesen – zuverlässig auf ESP32.
+
+void IRAM_ATTR rfRisingISR()  {}  // unused
+void IRAM_ATTR rfFallingISR() {}  // unused
 
 void IRAM_ATTR rfPulseISR() {
     const uint32_t now  = micros();
     const uint32_t diff = now - s_lastEdge;
     s_lastEdge = now;
+    s_isrCount++;
 
-    const bool pinHigh = digitalRead(CC1101_GDO0_PIN);
+    // Direktes GPIO-Register-Read: sicher und schnell auf ESP32
+    // Liest den Pegel NACH der Flanke
+    const bool pinHigh = (GPIO.in >> CC1101_GDO0_PIN) & 0x1;
 
-    if (!pinHigh) {
-        // Fallende Flanke → war HIGH-Puls
-        if (diff >= HEADER_HIGH_MIN && diff <= HEADER_HIGH_MAX) {
-            // Header erkannt → Frame starten
-            PulseBuffer& wb = s_buf[s_writeIdx];
-            wb.count     = 0;
-            wb.ready     = false;
-            wb.pulses[0] = diff | 0x80000000;  // Header HIGH markieren
-            wb.count     = 1;
-            s_inFrame    = true;
-        } else if (s_inFrame) {
-            // HIGH-Marker (ignorieren, Bit-Info steckt im nachfolgenden LOW)
-        }
-    } else {
-        // Steigende Flanke → war LOW-Puls
+    if (pinHigh) {
+        // Soeben auf HIGH gegangen → vorheriger LOW-Puls ist jetzt bekannt
         if (!s_inFrame) return;
 
         if (diff >= GAP_MIN) {
-            // Frame-Gap → Frame abschließen
+            // Frame-Gap (>10ms)
+            s_lastGapDur = diff;
             PulseBuffer& wb = s_buf[s_writeIdx];
+            if (wb.count > s_maxFrameCount) s_maxFrameCount = wb.count;
             if (wb.count >= 33) {
                 wb.ready   = true;
                 s_writeIdx ^= 1;
                 s_buf[s_writeIdx].count = 0;
                 s_buf[s_writeIdx].ready = false;
+            } else {
+                s_lastFrameCount = wb.count;
             }
             s_inFrame = false;
         } else if (diff >= BIT_MIN && diff <= BIT_MAX) {
-            // Bit-LOW → speichern
+            // Bit-LOW (200-3000µs) → speichern
+            s_lastBitLow = diff;
             PulseBuffer& wb = s_buf[s_writeIdx];
             if (wb.count < MAX_PULSES) {
-                wb.pulses[wb.count++] = diff;  // LOW-Puls (kein High-Bit gesetzt)
+                wb.pulses[wb.count++] = diff;
             } else {
                 s_inFrame = false;
             }
-        } else if (diff < BIT_MIN) {
-            // Zu kurz → Rauschen, ignorieren
-        } else {
-            // Ungültig → Frame verwerfen
-            s_inFrame = false;
-            s_buf[s_writeIdx].count = 0;
+        } else if (diff > BIT_MAX && diff < GAP_MIN) {
+            // Header-LOW (~4490µs) oder anderer langer LOW zwischen BIT_MAX und GAP_MIN
+            // → ignorieren (nicht als Frame-Abbruch werten)
+            // Nur beim ersten LOW nach Header (count==1) ist das der Header-LOW
         }
+        // diff < BIT_MIN → Rauschen, ignorieren
+    } else {
+        // Soeben auf LOW gegangen → vorheriger HIGH-Puls ist jetzt bekannt
+        if (diff > s_maxHighSeen) s_maxHighSeen = diff;
+
+        if (diff >= HEADER_HIGH_MIN && diff <= HEADER_HIGH_MAX) {
+            PulseBuffer& wb = s_buf[s_writeIdx];
+            wb.count     = 0;
+            wb.ready     = false;
+            wb.pulses[0] = diff | 0x80000000;
+            wb.count     = 1;
+            s_inFrame    = true;
+        }
+        // HIGH-Marker (~560µs) und andere HIGH-Pulse ignorieren
     }
 }
 
@@ -136,6 +156,7 @@ void rfReceiverEnterRx() {
 void rfReceiverLeaveRx() {
     if (!s_rxActive) return;
     detachInterrupt(CC1101_GDO0_PIN);
+    // Beide Interrupts werden durch einen detachInterrupt deaktiviert
     s_rxActive = false;
 }
 
@@ -149,6 +170,23 @@ void rfReceiverInit(RfRxCallback callback) {
 }
 
 void rfReceiverLoop() {
+    // Periodisch ISR-Aktivität loggen (alle 5s)
+    static uint32_t lastLog = 0;
+    static uint32_t lastCount = 0;
+    if (millis() - lastLog > 5000) {
+        uint32_t cnt = s_isrCount;
+        uint32_t maxH = s_maxHighSeen;
+        s_maxHighSeen = 0;
+        uint8_t mfc = s_maxFrameCount; s_maxFrameCount = 0;
+        Serial.printf("[RX] ISR: %u Flanken/5s maxHIGH=%uµs inFrame=%d "
+                      "lastFC=%d maxFC=%d lastGap=%u lastBitLow=%u\n",
+                      cnt - lastCount, maxH, (int)s_inFrame,
+                      (int)s_lastFrameCount, (int)mfc,
+                      (unsigned)s_lastGapDur, (unsigned)s_lastBitLow);
+        lastCount = cnt;
+        lastLog = millis();
+    }
+
     const uint8_t readIdx = s_writeIdx ^ 1;
     PulseBuffer&  rb      = s_buf[readIdx];
 
