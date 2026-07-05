@@ -39,9 +39,6 @@ static RfRxCallback s_callback = nullptr;
 static volatile uint32_t s_isrCount      = 0;
 static volatile uint32_t s_maxHighSeen   = 0;
 static volatile uint8_t  s_lastFrameCount = 0;  // Pulse im letzten unvollständigen Frame
-static volatile uint32_t s_lastGapDur   = 0;
-static volatile uint8_t  s_maxFrameCount = 0;
-static volatile uint8_t  s_lastBitLow = 0;
 static bool         s_rxActive = false;
 
 // ─── ISR ─────────────────────────────────────────────────────────────────────
@@ -57,7 +54,6 @@ void IRAM_ATTR rfPulseISR() {
     const uint32_t now  = micros();
     const uint32_t diff = now - s_lastEdge;
     s_lastEdge = now;
-    s_isrCount++;
 
     // Direktes GPIO-Register-Read: sicher und schnell auf ESP32
     // Liest den Pegel NACH der Flanke
@@ -69,21 +65,17 @@ void IRAM_ATTR rfPulseISR() {
 
         if (diff >= GAP_MIN) {
             // Frame-Gap (>10ms)
-            s_lastGapDur = diff;
             PulseBuffer& wb = s_buf[s_writeIdx];
-            if (wb.count > s_maxFrameCount) s_maxFrameCount = wb.count;
             if (wb.count >= 33) {
                 wb.ready   = true;
                 s_writeIdx ^= 1;
                 s_buf[s_writeIdx].count = 0;
                 s_buf[s_writeIdx].ready = false;
             } else {
-                s_lastFrameCount = wb.count;
             }
             s_inFrame = false;
         } else if (diff >= BIT_MIN && diff <= BIT_MAX) {
             // Bit-LOW (200-3000µs) → speichern
-            s_lastBitLow = diff;
             PulseBuffer& wb = s_buf[s_writeIdx];
             if (wb.count < MAX_PULSES) {
                 wb.pulses[wb.count++] = diff;
@@ -98,7 +90,6 @@ void IRAM_ATTR rfPulseISR() {
         // diff < BIT_MIN → Rauschen, ignorieren
     } else {
         // Soeben auf LOW gegangen → vorheriger HIGH-Puls ist jetzt bekannt
-        if (diff > s_maxHighSeen) s_maxHighSeen = diff;
 
         if (diff >= HEADER_HIGH_MIN && diff <= HEADER_HIGH_MAX) {
             PulseBuffer& wb = s_buf[s_writeIdx];
@@ -170,23 +161,6 @@ void rfReceiverInit(RfRxCallback callback) {
 }
 
 void rfReceiverLoop() {
-    // Periodisch ISR-Aktivität loggen (alle 5s)
-    static uint32_t lastLog = 0;
-    static uint32_t lastCount = 0;
-    if (millis() - lastLog > 5000) {
-        uint32_t cnt = s_isrCount;
-        uint32_t maxH = s_maxHighSeen;
-        s_maxHighSeen = 0;
-        uint8_t mfc = s_maxFrameCount; s_maxFrameCount = 0;
-        Serial.printf("[RX] ISR: %u Flanken/5s maxHIGH=%uµs inFrame=%d "
-                      "lastFC=%d maxFC=%d lastGap=%u lastBitLow=%u\n",
-                      cnt - lastCount, maxH, (int)s_inFrame,
-                      (int)s_lastFrameCount, (int)mfc,
-                      (unsigned)s_lastGapDur, (unsigned)s_lastBitLow);
-        lastCount = cnt;
-        lastLog = millis();
-    }
-
     const uint8_t readIdx = s_writeIdx ^ 1;
     PulseBuffer&  rb      = s_buf[readIdx];
 
