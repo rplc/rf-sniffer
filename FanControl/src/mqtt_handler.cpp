@@ -84,6 +84,10 @@ static void onRfFrame(const uint8_t remoteId[2], uint8_t cmd) {
     }
 }
 
+// ─── Retained Message Filter ─────────────────────────────────────────────────
+// Nach dem Subscribe retained Messages für 500ms ignorieren
+static uint32_t s_ignoreUntil = 0;
+
 // ─── Dimmer-Hold-State ────────────────────────────────────────────────────────
 
 static bool     s_dimmerActive = false;
@@ -162,6 +166,12 @@ static void onMqttMessage(const char* topic, uint8_t* payload, unsigned int leng
     }
     if (!fan) return;
 
+    // Retained Messages nach Subscribe ignorieren
+    if (millis() < s_ignoreUntil) {
+        Serial.printf("[MQTT] Ignoriert (retained): %s\n", topic);
+        return;
+    }
+
     // Payload null-terminieren für sicheres Logging und Parsing
     char payloadStr[256] = {};
     size_t copyLen = min((unsigned int)length, (unsigned int)sizeof(payloadStr) - 1);
@@ -212,6 +222,9 @@ static void reconnect() {
                 s_client->subscribe(FANS[i].topic);
                 Serial.printf("[MQTT] Abonniert: %s\n", FANS[i].topic);
             }
+            // Retained Messages der nächsten 500ms ignorieren
+            s_ignoreUntil = millis() + 500;
+            Serial.println("[MQTT] Ignoriere retained Messages für 500ms");
         } else {
             Serial.printf(" fehlgeschlagen (rc=%d), retry in 5s\n", s_client->state());
             delay(5000);
