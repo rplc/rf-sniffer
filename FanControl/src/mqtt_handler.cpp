@@ -1,13 +1,14 @@
 #include "mqtt_handler.h"
 #include "rf_sender.h"
 #include "rf_receiver.h"
+#include "lamp_handler.h"
 #include "config.h"
 #include <ArduinoJson.h>
 
 // ─── Fan-Konfiguration ───────────────────────────────────────────────────────
 
 struct FanConfig {
-    const char* topic;        // MQTT-Topic für Kommandos (eingehend)
+    const char* topic;   // MQTT-Topic (subscribe + publish)
     uint8_t     id[2];
 };
 
@@ -26,22 +27,22 @@ static bool cmdToPayload(uint8_t cmd, char* buf, size_t bufLen) {
     int         value  = -1;
 
     switch (cmd) {
-        case CMD_ALL_OFF:     cmdStr = "all_off";      break;
-        case CMD_FAN_OFF:     cmdStr = "fan_off";      break;
-        case CMD_SPEED_1:     cmdStr = "speed"; value = 1; break;
-        case CMD_SPEED_2:     cmdStr = "speed"; value = 2; break;
-        case CMD_SPEED_3:     cmdStr = "speed"; value = 3; break;
-        case CMD_SPEED_4:     cmdStr = "speed"; value = 4; break;
-        case CMD_SPEED_5:     cmdStr = "speed"; value = 5; break;
-        case CMD_SPEED_6:     cmdStr = "speed"; value = 6; break;
-        case CMD_NAT_WIND:    cmdStr = "natural_wind"; break;
-        case CMD_LIGHT:       cmdStr = "light";        break;
-        case CMD_TIMER_1H:    cmdStr = "timer"; value = 1; break;
-        case CMD_TIMER_4H:    cmdStr = "timer"; value = 4; break;
-        case CMD_TIMER_8H:    cmdStr = "timer"; value = 8; break;
-        case CMD_COLOR_TEMP:  cmdStr = "color_temp";  break;
-        case CMD_DIMMER:      cmdStr = "dimmer"; value = 0; break;  // Hold-Start
-        case CMD_ROTATION:    cmdStr = "rotation";    break;
+        case FAN_CMD_ALL_OFF:     cmdStr = "all_off";      break;
+        case FAN_CMD_FAN_OFF:     cmdStr = "fan_off";      break;
+        case FAN_CMD_SPEED_1:     cmdStr = "speed"; value = 1; break;
+        case FAN_CMD_SPEED_2:     cmdStr = "speed"; value = 2; break;
+        case FAN_CMD_SPEED_3:     cmdStr = "speed"; value = 3; break;
+        case FAN_CMD_SPEED_4:     cmdStr = "speed"; value = 4; break;
+        case FAN_CMD_SPEED_5:     cmdStr = "speed"; value = 5; break;
+        case FAN_CMD_SPEED_6:     cmdStr = "speed"; value = 6; break;
+        case FAN_CMD_NAT_WIND:    cmdStr = "natural_wind"; break;
+        case FAN_CMD_LIGHT:       cmdStr = "light";        break;
+        case FAN_CMD_TIMER_1H:    cmdStr = "timer"; value = 1; break;
+        case FAN_CMD_TIMER_4H:    cmdStr = "timer"; value = 4; break;
+        case FAN_CMD_TIMER_8H:    cmdStr = "timer"; value = 8; break;
+        case FAN_CMD_COLOR_TEMP:  cmdStr = "color_temp";  break;
+        case FAN_CMD_DIMMER:      cmdStr = "dimmer"; value = 0; break;  // Hold-Start
+        case FAN_CMD_ROTATION:    cmdStr = "rotation";    break;
         default:
             Serial.printf("[RX] Unbekannter CMD: 0x%02X\n", cmd);
             return false;
@@ -73,8 +74,16 @@ static void onRfFrame(const uint8_t remoteId[2], uint8_t cmd) {
         return;
     }
 
-    char payload[64];
+    char payload[96];
     if (!cmdToPayload(cmd, payload, sizeof(payload))) return;
+
+    // Timestamp für Cache-Busting: ioBroker ignoriert sonst doppelte Werte
+    StaticJsonDocument<96> tsDoc;
+    DeserializationError e = deserializeJson(tsDoc, payload);
+    if (!e) {
+        tsDoc["ts"] = millis();
+        serializeJson(tsDoc, payload, sizeof(payload));
+    }
 
     Serial.printf("[RX] Remote %02X%02X → %s : %s\n",
                   remoteId[0], remoteId[1], fan->topic, payload);
@@ -97,7 +106,7 @@ static uint8_t  s_dimmerFanIdx = 0;
 static void dimmerTick() {
     if (!s_dimmerActive) return;
     if (millis() >= s_dimmerNext) {
-        rfSend(FANS[s_dimmerFanIdx].id, CMD_DIMMER, 1);
+        rfSend(FANS[s_dimmerFanIdx].id, FAN_CMD_DIMMER, 1);
         s_dimmerNext = millis() + RF_DIMMER_INTERVAL_MS;
     }
 }
@@ -110,21 +119,21 @@ static uint8_t resolveCmd(const JsonDocument& doc, bool& isDimmer, bool& dimmerS
 
     const char* cmd = doc["cmd"] | "";
 
-    if (strcmp(cmd, "all_off") == 0)      return CMD_ALL_OFF;
-    if (strcmp(cmd, "fan_off") == 0)      return CMD_FAN_OFF;
-    if (strcmp(cmd, "natural_wind") == 0) return CMD_NAT_WIND;
-    if (strcmp(cmd, "light") == 0)        return CMD_LIGHT;
-    if (strcmp(cmd, "color_temp") == 0)   return CMD_COLOR_TEMP;
-    if (strcmp(cmd, "rotation") == 0)     return CMD_ROTATION;
+    if (strcmp(cmd, "all_off") == 0)      return FAN_CMD_ALL_OFF;
+    if (strcmp(cmd, "fan_off") == 0)      return FAN_CMD_FAN_OFF;
+    if (strcmp(cmd, "natural_wind") == 0) return FAN_CMD_NAT_WIND;
+    if (strcmp(cmd, "light") == 0)        return FAN_CMD_LIGHT;
+    if (strcmp(cmd, "color_temp") == 0)   return FAN_CMD_COLOR_TEMP;
+    if (strcmp(cmd, "rotation") == 0)     return FAN_CMD_ROTATION;
 
     if (strcmp(cmd, "speed") == 0) {
         switch (doc["value"] | 0) {
-            case 1: return CMD_SPEED_1;
-            case 2: return CMD_SPEED_2;
-            case 3: return CMD_SPEED_3;
-            case 4: return CMD_SPEED_4;
-            case 5: return CMD_SPEED_5;
-            case 6: return CMD_SPEED_6;
+            case 1: return FAN_CMD_SPEED_1;
+            case 2: return FAN_CMD_SPEED_2;
+            case 3: return FAN_CMD_SPEED_3;
+            case 4: return FAN_CMD_SPEED_4;
+            case 5: return FAN_CMD_SPEED_5;
+            case 6: return FAN_CMD_SPEED_6;
             default:
                 Serial.printf("[MQTT] Ungültige Geschwindigkeit: %d\n", (int)(doc["value"] | 0));
                 return 0;
@@ -133,9 +142,9 @@ static uint8_t resolveCmd(const JsonDocument& doc, bool& isDimmer, bool& dimmerS
 
     if (strcmp(cmd, "timer") == 0) {
         switch (doc["value"] | 0) {
-            case 1: return CMD_TIMER_1H;
-            case 4: return CMD_TIMER_4H;
-            case 8: return CMD_TIMER_8H;
+            case 1: return FAN_CMD_TIMER_1H;
+            case 4: return FAN_CMD_TIMER_4H;
+            case 8: return FAN_CMD_TIMER_8H;
             default:
                 Serial.printf("[MQTT] Ungültiger Timer-Wert: %d\n", (int)(doc["value"] | 0));
                 return 0;
@@ -145,7 +154,7 @@ static uint8_t resolveCmd(const JsonDocument& doc, bool& isDimmer, bool& dimmerS
     if (strcmp(cmd, "dimmer") == 0) {
         isDimmer = true;
         if (!(doc["dimmer_hold"] | false)) dimmerStop = true;
-        return CMD_DIMMER;
+        return FAN_CMD_DIMMER;
     }
 
     Serial.printf("[MQTT] Unbekanntes Kommando: %s\n", cmd);
@@ -155,6 +164,13 @@ static uint8_t resolveCmd(const JsonDocument& doc, bool& isDimmer, bool& dimmerS
 // ─── MQTT Callback (eingehende Kommandos von ioBroker) ───────────────────────
 
 static void onMqttMessage(const char* topic, uint8_t* payload, unsigned int length) {
+    // Lamp-Topics abfangen und weiterleiten
+    if (strcmp(topic, LAMP_TOPIC_CEILING) == 0 ||
+        strcmp(topic, LAMP_TOPIC_READING)  == 0) {
+        lampOnMqttMessage(topic, payload, length);
+        return;
+    }
+
     const FanConfig* fan    = nullptr;
     uint8_t          fanIdx = 0;
     for (uint8_t i = 0; i < FAN_COUNT; i++) {
@@ -222,6 +238,10 @@ static void reconnect() {
                 s_client->subscribe(FANS[i].topic);
                 Serial.printf("[MQTT] Abonniert: %s\n", FANS[i].topic);
             }
+            s_client->subscribe(LAMP_TOPIC_CEILING);
+            s_client->subscribe(LAMP_TOPIC_READING);
+            Serial.printf("[MQTT] Abonniert: %s\n", LAMP_TOPIC_CEILING);
+            Serial.printf("[MQTT] Abonniert: %s\n", LAMP_TOPIC_READING);
             // Retained Messages der nächsten 500ms ignorieren
             s_ignoreUntil = millis() + 500;
             Serial.println("[MQTT] Ignoriere retained Messages für 500ms");
@@ -238,7 +258,8 @@ void mqttInit(PubSubClient& client) {
     s_client = &client;
     client.setServer(MQTT_BROKER, 1883);
     client.setCallback(onMqttMessage);
-    rfReceiverInit(onRfFrame);   // RX-Modus starten und Callback registrieren
+    rfReceiverInit(onRfFrame, lampOnRfFrame);
+    lampInit(client);
 }
 
 void mqttLoop(PubSubClient& client) {
@@ -246,4 +267,5 @@ void mqttLoop(PubSubClient& client) {
     client.loop();
     rfReceiverLoop();
     dimmerTick();
+    lampLoop();
 }

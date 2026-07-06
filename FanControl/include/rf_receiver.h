@@ -1,13 +1,19 @@
 #pragma once
 #include <Arduino.h>
 
-using RfRxCallback = void (*)(const uint8_t remoteId[2], uint8_t cmd);
+// ─── Callback-Typen ──────────────────────────────────────────────────────────
 
-void rfReceiverInit(RfRxCallback callback);
+// Fan-Frame empfangen (eigenes PWM-Protokoll)
+using FanRxCallback  = void (*)(const uint8_t remoteId[2], uint8_t cmd);
+
+// Lamp-Frame empfangen (Protokoll 2 kompatibel)
+using LampRxCallback = void (*)(uint32_t code);
+
+// ─── API ─────────────────────────────────────────────────────────────────────
+
+void rfReceiverInit(FanRxCallback fanCb, LampRxCallback lampCb);
 void rfReceiverLoop();
 void rfReceiverEnterRx();
 void rfReceiverLeaveRx();
 
-void IRAM_ATTR rfRisingISR();
-void IRAM_ATTR rfFallingISR();
-void IRAM_ATTR rfPulseISR();  // unused, kept for compatibility
+void IRAM_ATTR rfPulseISR();

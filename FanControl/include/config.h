@@ -14,7 +14,7 @@
 #define CC1101_MISO_PIN  19
 #define CC1101_MOSI_PIN  23
 #define CC1101_CS_PIN    21
-#define CC1101_GDO0_PIN  22   // TX-Ausgang (Datenleitung) + RX-Eingang
+#define CC1101_GDO0_PIN  22   // TX-Ausgang + RX-Eingang (Fan + Lamp)
 
 // ─── RF-Timing (µs, verifiziert mit Pegel-Sniffer) ───────────────────────────
 // Protokoll: PWM mit Bit-Wert im LOW-Puls
@@ -38,19 +38,37 @@
 #define RF_DIMMER_INTERVAL_MS  70
 
 // ─── Kommando-Bytes B2 (verifiziert, Checksumme B3=~B2) ──────────────────────
-#define CMD_ALL_OFF     0x40
-#define CMD_FAN_OFF     0x08
-#define CMD_SPEED_1     0x10
-#define CMD_SPEED_2     0x90
-#define CMD_SPEED_3     0x48
-#define CMD_SPEED_4     0xC8
-#define CMD_SPEED_5     0x88
-#define CMD_SPEED_6     0x60
-#define CMD_NAT_WIND    0x98
-#define CMD_LIGHT       0xC0
-#define CMD_TIMER_1H    0x28
-#define CMD_TIMER_4H    0xA8
-#define CMD_TIMER_8H    0xFF
-#define CMD_COLOR_TEMP  0x7C
-#define CMD_DIMMER      0x4D
-#define CMD_ROTATION    0x74
+#define FAN_CMD_ALL_OFF     0x40
+#define FAN_CMD_FAN_OFF     0x08
+#define FAN_CMD_SPEED_1     0x10
+#define FAN_CMD_SPEED_2     0x90
+#define FAN_CMD_SPEED_3     0x48
+#define FAN_CMD_SPEED_4     0xC8
+#define FAN_CMD_SPEED_5     0x88
+#define FAN_CMD_SPEED_6     0x60
+#define FAN_CMD_NAT_WIND    0x98
+#define FAN_CMD_LIGHT       0xC0
+#define FAN_CMD_TIMER_1H    0x28
+#define FAN_CMD_TIMER_4H    0xA8
+#define FAN_CMD_TIMER_8H    0xFF
+#define FAN_CMD_COLOR_TEMP  0x7C
+#define FAN_CMD_DIMMER      0x4D
+#define FAN_CMD_ROTATION    0x74
+
+// ─── Stehlampe (24-Bit PWM, Protokoll 2 kompatibel) ─────────────────────────
+#define LAMP_TOPIC_CEILING   "lamp/ceiling"   // Deckenstrahler
+#define LAMP_TOPIC_READING   "lamp/reading"   // Leselampe
+
+// Lamp-Codes (24-Bit, Pulse Length 248µs)
+#define LAMP_CEILING_ONOFF    4835521
+#define LAMP_CEILING_CCT      4835529
+#define LAMP_CEILING_BRIGHT_UP   4835524
+#define LAMP_CEILING_BRIGHT_DOWN 4835528
+
+#define LAMP_READING_ONOFF    4835535
+#define LAMP_READING_CCT      4835530
+#define LAMP_READING_BRIGHT_UP   4835525
+#define LAMP_READING_BRIGHT_DOWN 4835522
+
+#define LAMP_PULSE_LENGTH     248
+#define LAMP_REPEAT_COUNT       3
