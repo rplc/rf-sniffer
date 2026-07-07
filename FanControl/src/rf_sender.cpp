@@ -5,11 +5,14 @@
 #include <rom/ets_sys.h>
 
 void rfConfigRx() {
-    // MDMCFG2 muss auch für RX gesetzt sein (OOK ohne Sync-Word)
-    // sonst filtert CC1101 den Datenstrom auf GDO0 weg
-    ELECHOUSE_cc1101.SpiWriteReg(0x12, 0x30);
+    // CC1101 muss erst in IDLE bevor er in RX wechseln kann.
+    // Nach TX direkt SetRx() aufzurufen lässt ihn in einem
+    // undefinierten Zustand – daher: SIDLE → kurz warten → SRX
+    ELECHOUSE_cc1101.SpiStrobe(0x36);   // SIDLE
+    delay(2);                            // 2ms settling
+    ELECHOUSE_cc1101.SpiWriteReg(0x12, 0x30);  // MDMCFG2: OOK, kein Sync
     ELECHOUSE_cc1101.SetRx();
-    delayMicroseconds(200);
+    delay(2);                            // PLL settling nach SRX
     pinMode(CC1101_GDO0_PIN, INPUT);
 }
 
@@ -61,10 +64,14 @@ static void IRAM_ATTR sendFrame(const uint8_t id[2], uint8_t cmd) {
 void rfSend(const uint8_t id[2], uint8_t cmd, uint8_t repeat) {
     rfReceiverLeaveRx();
 
+    // IDLE → TX (sauberer Zustandsübergang)
+    ELECHOUSE_cc1101.SpiStrobe(0x36);   // SIDLE
+    delay(2);
+    ELECHOUSE_cc1101.SpiWriteReg(0x12, 0x30);  // MDMCFG2: OOK, kein Sync
     ELECHOUSE_cc1101.SetTx();
     pinMode(CC1101_GDO0_PIN, OUTPUT);
     digitalWrite(CC1101_GDO0_PIN, LOW);
-    ets_delay_us(200);
+    ets_delay_us(500);                   // PLL settling nach STX
 
     for (uint8_t i = 0; i < repeat; i++) {
         noInterrupts();

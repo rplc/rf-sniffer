@@ -8,43 +8,52 @@
 
 static PubSubClient* s_client = nullptr;
 
-// ─── Lamp TX: eigene PWM-Implementierung ───────────────────────────────────────
-// rc-Switch Protokoll 2 kompatibel, pulseLength=248µs:
-//   Sync:  HIGH=248µs   LOW=7688µs (31×248)
-//   Bit-1: HIGH=744µs   LOW=248µs  (3×248, 1×248)
-//   Bit-0: HIGH=248µs   LOW=744µs  (1×248, 3×248)
+// ─── Lamp TX: PWM analog Protokoll 2 ─────────────────────────────────────────
+// Gemessen aus SDR-Captures der echten Fernbedienung:
+//   Bit-0: HIGH=248µs  LOW=744µs  (1x, 3x)
+//   Bit-1: HIGH=744µs  LOW=248µs  (3x, 1x)
+//   Sync:  HIGH=248µs  LOW=7688µs (1x, 31x)
+//
+// ets_delay_us Overhead auf ESP32 kompensiert:
+//   Kurze Pulse (248µs): -20µs Korrektur → 228µs
+//   Lange Pulse (744µs): -20µs Korrektur → 724µs
 
-#define LP  248   // base pulse length µs
+#define LAMP_LP_SHORT   228   // 1x pulse (korrigiert)
+#define LAMP_LP_LONG    724   // 3x pulse (korrigiert)
+#define LAMP_SYNC_LOW  7688   // 31x pulse
 
 static void IRAM_ATTR lampSendFrame(uint32_t code, uint8_t bits) {
     // Sync
-    digitalWrite(CC1101_GDO0_PIN, HIGH); ets_delay_us(LP);
-    digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(31 * LP);
+    digitalWrite(CC1101_GDO0_PIN, HIGH); ets_delay_us(LAMP_LP_SHORT);
+    digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(LAMP_SYNC_LOW);
 
-    // Bits (MSB first)
+    // Bits MSB-first
     for (int i = bits - 1; i >= 0; i--) {
         bool bit = (code >> i) & 0x1;
         if (bit) {
-            digitalWrite(CC1101_GDO0_PIN, HIGH); ets_delay_us(3 * LP);
-            digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(1 * LP);
+            digitalWrite(CC1101_GDO0_PIN, HIGH); ets_delay_us(LAMP_LP_LONG);
+            digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(LAMP_LP_SHORT);
         } else {
-            digitalWrite(CC1101_GDO0_PIN, HIGH); ets_delay_us(1 * LP);
-            digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(3 * LP);
+            digitalWrite(CC1101_GDO0_PIN, HIGH); ets_delay_us(LAMP_LP_SHORT);
+            digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(LAMP_LP_LONG);
         }
     }
-
-    // Abschließender Sync-LOW (Frame-Trennung)
-    digitalWrite(CC1101_GDO0_PIN, HIGH); ets_delay_us(LP);
-    digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(31 * LP);
+    // Abschluss-Sync
+    digitalWrite(CC1101_GDO0_PIN, HIGH); ets_delay_us(LAMP_LP_SHORT);
+    digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(LAMP_SYNC_LOW);
 }
 
 static void lampSend(uint32_t code) {
     rfReceiverLeaveRx();
 
+    // IDLE → TX (sauberer Zustandsübergang)
+    ELECHOUSE_cc1101.SpiStrobe(0x36);   // SIDLE
+    delay(2);
+    ELECHOUSE_cc1101.SpiWriteReg(0x12, 0x30);  // MDMCFG2: OOK, kein Sync
     ELECHOUSE_cc1101.SetTx();
     pinMode(CC1101_GDO0_PIN, OUTPUT);
     digitalWrite(CC1101_GDO0_PIN, LOW);
-    ets_delay_us(200);
+    ets_delay_us(500);
 
     for (uint8_t i = 0; i < LAMP_REPEAT_COUNT; i++) {
         noInterrupts();
@@ -61,7 +70,7 @@ static void lampSend(uint32_t code) {
 
 struct LampCode {
     uint32_t    code;
-    const char* topic;  // MQTT-Topic (subscribe + publish)
+    const char* topic;
     const char* cmd;
 };
 
@@ -94,15 +103,14 @@ void lampOnRfFrame(uint32_t code) {
     for (uint8_t i = 0; i < LAMP_CODE_COUNT; i++) {
         if (LAMP_CODES[i].code != code) continue;
 
-        char payload[64];
-        StaticJsonDocument<64> doc;
+        char payload[80];
+        StaticJsonDocument<80> doc;
         doc["cmd"] = LAMP_CODES[i].cmd;
         doc["ts"]  = millis();
         serializeJson(doc, payload, sizeof(payload));
 
         Serial.printf("[LAMP] RX: %u → %s : %s\n",
                       code, LAMP_CODES[i].topic, payload);
-
         if (s_client && s_client->connected()) {
             s_client->publish(LAMP_CODES[i].topic, payload, false);
         }
@@ -114,11 +122,11 @@ void lampOnRfFrame(uint32_t code) {
 // ─── MQTT eingehend ────────────────────────────────────────────────────────────
 
 void lampOnMqttMessage(const char* topic, const uint8_t* payload, unsigned int length) {
-    char payloadStr[64] = {};
-    memcpy(payloadStr, payload, min((unsigned)length, (unsigned)sizeof(payloadStr) - 1));
+    char payloadStr[80] = {};
+    memcpy(payloadStr, payload, min((unsigned)length, (unsigned)sizeof(payloadStr)-1));
     Serial.printf("[LAMP] MQTT: %s → %s\n", topic, payloadStr);
 
-    StaticJsonDocument<64> doc;
+    StaticJsonDocument<80> doc;
     if (deserializeJson(doc, payloadStr)) {
         Serial.printf("[LAMP] JSON-Fehler\n");
         return;
@@ -132,7 +140,6 @@ void lampOnMqttMessage(const char* topic, const uint8_t* payload, unsigned int l
         Serial.printf("[LAMP] Unbekanntes CMD: %s\n", cmd);
         return;
     }
-
     lampSend(code);
 }
 
@@ -142,6 +149,4 @@ void lampInit(PubSubClient& client) {
     s_client = &client;
 }
 
-void lampLoop() {
-    // Lamp-RX via rfReceiverLoop → lampOnRfFrame Callback
-}
+void lampLoop() {}
