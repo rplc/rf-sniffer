@@ -2,8 +2,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "config.h"
-#include "rf_sender.h"
-#include "rf_receiver.h"
+#include "rf_handler.h"
 #include "mqtt_handler.h"
 #include "OTA.h"
 
@@ -30,14 +29,7 @@ void setup() {
     wifiConnect();
     ota.init();
 
-    if (!rfSenderInit()) {
-        Serial.println("[BOOT] CC1101 Fehler - Neustart in 10s");
-        delay(10000);
-        ESP.restart();
-    }
-
     mqttInit(mqttClient);
-    rfReceiverEnterRx();
 }
 
 void loop() {

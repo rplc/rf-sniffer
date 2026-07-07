@@ -8,7 +8,7 @@ void lampInit(PubSubClient& client);
 // Im loop() aufrufen
 void lampLoop();
 
-// Callback vom unified rf_receiver wenn ein Lamp-Frame empfangen wurde
+// Callback vom rf_handler wenn ein Lamp-Frame empfangen wurde
 void lampOnRfFrame(uint32_t code);
 
 // Wird von mqtt_handler aufgerufen wenn eine Lamp-Topic-Nachricht ankommt

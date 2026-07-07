@@ -1,7 +1,7 @@
 #include "mqtt_handler.h"
 #include "fan_handler.h"
 #include "lamp_handler.h"
-#include "rf_receiver.h"
+#include "rf_handler.h"
 #include "config.h"
 
 // ─── Topics ───────────────────────────────────────────────────────────────────
@@ -82,7 +82,11 @@ void mqttInit(PubSubClient& client) {
     s_client = &client;
     client.setServer(MQTT_BROKER, 1883);
     client.setCallback(onMessage);
-    rfReceiverInit(fanOnRfFrame, lampOnRfFrame);
+    if (!rfInit(fanOnRfFrame, lampOnRfFrame)) {
+        Serial.println("[BOOT] CC1101 Fehler - Neustart in 10s");
+        delay(10000);
+        ESP.restart();
+    }
     fanInit(client);
     lampInit(client);
 }
@@ -90,7 +94,7 @@ void mqttInit(PubSubClient& client) {
 void mqttLoop(PubSubClient& client) {
     if (!client.connected()) reconnect();
     client.loop();
-    rfReceiverLoop();
+    rfLoop();
     fanLoop();
     lampLoop();
 }

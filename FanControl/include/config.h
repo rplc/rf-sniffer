@@ -14,30 +14,35 @@
 #define CC1101_MISO_PIN  19
 #define CC1101_MOSI_PIN  23
 #define CC1101_CS_PIN    21
-#define CC1101_GDO0_PIN  22   // TX-Ausgang + RX-Eingang (Fan + Lamp)
+#define CC1101_GDO0_PIN  22
 
-// ─── RF-Timing (µs, verifiziert mit Pegel-Sniffer) ───────────────────────────
+// ─── CC1101 Frequenz ─────────────────────────────────────────────────────────
+#define RF_FREQ_MHZ      433.90
+
+// ─── Fan RF-Timing (µs) ──────────────────────────────────────────────────────
 // Protokoll: PWM mit Bit-Wert im LOW-Puls
-//   Header HIGH: ~8120µs
-//   Header LOW:  ~4490µs
-//   HIGH-Marker: ~565µs  (konstant, zwischen jedem Bit)
-//   LOW Bit-0:   ~565µs
-//   LOW Bit-1:  ~1680µs
-//   Frame-Gap:  ~20000µs
+// TX-Werte (direkt gesendet) = RX-Toleranzmitten
+#define FAN_HEADER_HIGH   8120   // Header HIGH-Puls
+#define FAN_HEADER_LOW    4490   // Header LOW-Puls (nach Header)
+#define FAN_PULSE          560   // konstanter HIGH-Marker zwischen Bits
+#define FAN_BIT_0          560   // LOW für Bit 0
+#define FAN_BIT_1         1680   // LOW für Bit 1
+#define FAN_FRAME_GAP    20000   // Frame-Trenner LOW
+#define FAN_REPEAT_COUNT     3   // Frames pro Kommando
 
-#define RF_FREQ_MHZ      433.90   // Kalibriert via SDR-Sweep
+// RX-Toleranzfenster (±40% um TX-Werte)
+#define FAN_RX_HEADER_MIN   5000   // Header HIGH muss > 5ms sein
+#define FAN_RX_HEADER_MAX  12000   // Header HIGH muss < 12ms sein
+#define FAN_RX_HDR_LOW_MAX 10000   // Header LOW ignorieren (3-10ms)
+#define FAN_RX_BIT_MIN       200   // Bit LOW muss > 200µs sein
+#define FAN_RX_BIT_MAX      3000   // Bit LOW muss < 3ms sein
+#define FAN_RX_BIT_ONE       900   // LOW >= 900µs → Bit 1
+#define FAN_RX_GAP_MIN     10000   // LOW > 10ms → Frame-Ende
 
-#define RF_HEADER_HIGH   8120
-#define RF_HEADER_LOW    4490
-#define RF_PULSE          560    // konstanter HIGH-Marker zwischen Bits
-#define RF_BIT_0          560    // LOW-Dauer für Bit 0
-#define RF_BIT_1         1680    // LOW-Dauer für Bit 1
-#define RF_FRAME_GAP    20000
-#define RF_REPEAT_COUNT     3
+#define FAN_RX_DEBOUNCE_MS   800   // Gleicher CMD innerhalb 800ms ignorieren
+#define FAN_DIMMER_INTERVAL_MS 70  // Dimmer-Wiederholrate
 
-#define RF_DIMMER_INTERVAL_MS  70
-
-// ─── Kommando-Bytes B2 (verifiziert, Checksumme B3=~B2) ──────────────────────
+// ─── Fan Kommando-Bytes B2 ───────────────────────────────────────────────────
 #define FAN_CMD_ALL_OFF     0x40
 #define FAN_CMD_FAN_OFF     0x08
 #define FAN_CMD_SPEED_1     0x10
@@ -55,20 +60,32 @@
 #define FAN_CMD_DIMMER      0x4D
 #define FAN_CMD_ROTATION    0x74
 
-// ─── Stehlampe (24-Bit PWM, Protokoll 2 kompatibel) ─────────────────────────
-#define LAMP_TOPIC_CEILING   "lamp/ceiling"   // Deckenstrahler
-#define LAMP_TOPIC_READING   "lamp/reading"   // Leselampe
+// ─── Lamp MQTT-Topics ────────────────────────────────────────────────────────
+#define LAMP_TOPIC_CEILING   "lamp/ceiling"
+#define LAMP_TOPIC_READING   "lamp/reading"
 
-// Lamp-Codes (24-Bit, Pulse Length 248µs)
-#define LAMP_CEILING_ONOFF    4835521
-#define LAMP_CEILING_CCT      4835529
+// ─── Lamp RF-Codes (24-Bit) ──────────────────────────────────────────────────
+#define LAMP_CEILING_ONOFF       4835521
+#define LAMP_CEILING_CCT         4835529
 #define LAMP_CEILING_BRIGHT_UP   4835524
 #define LAMP_CEILING_BRIGHT_DOWN 4835528
-
-#define LAMP_READING_ONOFF    4835535
-#define LAMP_READING_CCT      4835530
+#define LAMP_READING_ONOFF       4835535
+#define LAMP_READING_CCT         4835530
 #define LAMP_READING_BRIGHT_UP   4835525
 #define LAMP_READING_BRIGHT_DOWN 4835522
 
-#define LAMP_PULSE_LENGTH     248
-#define LAMP_REPEAT_COUNT       3
+// ─── Lamp RF-Timing (µs) ─────────────────────────────────────────────────────
+// Protokoll 2 kompatibel: Bit-Wert im HIGH-Puls
+// TX-Werte mit ets_delay_us Overhead-Kompensation:
+#define LAMP_TX_SHORT       228   // 1x Basis-Puls TX (nominal 248µs)
+#define LAMP_TX_LONG        724   // 3x Basis-Puls TX (nominal 744µs)
+#define LAMP_TX_SYNC_LOW   7688   // 31x Basis-Puls (Sync / Frame-Trenner)
+
+// RX-Toleranzfenster:
+#define LAMP_RX_SYNC_MIN   5000   // LOW > 5ms → Sync erkannt
+#define LAMP_RX_HIGH_MIN    100   // HIGH > 100µs → kein Rauschen
+#define LAMP_RX_HIGH_MAX   1500   // HIGH < 1.5ms → gültiges Bit
+#define LAMP_RX_BIT_ONE     450   // HIGH >= 450µs → Bit 1 (nominal 744µs)
+
+#define LAMP_REPEAT_COUNT     3
+#define LAMP_RX_DEBOUNCE_MS 800   // Gleicher Code innerhalb 800ms ignorieren
