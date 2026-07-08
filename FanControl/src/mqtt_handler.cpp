@@ -67,8 +67,8 @@ static void reconnect() {
                 s_client->subscribe(t);
                 Serial.printf("[MQTT] Abonniert: %s\n", t);
             }
-            s_ignoreUntil = millis() + 500;
-            Serial.println("[MQTT] Ignoriere retained Messages für 500ms");
+            s_ignoreUntil = millis() + 2000;
+            Serial.println("[MQTT] Ignoriere retained Messages für 2s");
         } else {
             Serial.printf(" fehlgeschlagen (rc=%d), retry in 5s\n", s_client->state());
             delay(5000);
@@ -94,7 +94,4 @@ void mqttInit(PubSubClient& client) {
 void mqttLoop(PubSubClient& client) {
     if (!client.connected()) reconnect();
     client.loop();
-    rfLoop();
-    fanLoop();
-    lampLoop();
 }

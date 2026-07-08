@@ -89,3 +89,14 @@
 
 #define LAMP_REPEAT_COUNT     3
 #define LAMP_RX_DEBOUNCE_MS 800   // Gleicher Code innerhalb 800ms ignorieren
+
+// ─── Zweiter CC1101: Bresser 7-in-1 Wetterstation (868 MHz) ──────────────────
+// Eigener SPI-Bus (HSPI) um Konflikt mit dem 433MHz CC1101 (VSPI) zu vermeiden
+#define BRESSER_SCK_PIN   14
+#define BRESSER_MISO_PIN  12
+#define BRESSER_MOSI_PIN  13
+#define BRESSER_CS_PIN    15
+#define BRESSER_GDO0_PIN  4    // Datenausgang (RX)
+
+#define BRESSER_FREQ_MHZ  868.35
+#define BRESSER_MQTT_TOPIC "weather/bresser7in1"
