@@ -1,144 +1,153 @@
 #include "bresser_handler.h"
 #include "config.h"
 #include <SPI.h>
-#include <SmartRC_CC1101.h>
 #include <ArduinoJson.h>
 
-// ─── Zweiter CC1101 auf HSPI ─────────────────────────────────────────────────
-// Der 433MHz CC1101 nutzt VSPI (Pins 18/19/23).
-// Der Bresser CC1101 nutzt HSPI (Pins 14/12/13) mit eigenem CS.
-// SmartRC_CC1101 nutzt eine globale Instanz – wir steuern den zweiten
-// CC1101 direkt über SPI-Direktzugriff mit HSPI.
-
-static SPIClass        s_hspi(HSPI);
-static PubSubClient*   s_client = nullptr;
+static SPIClass      s_hspi(HSPI);
+static PubSubClient* s_client  = nullptr;
+static bool          s_ready   = false;
 
 // ─── CC1101 SPI-Zugriff (HSPI) ───────────────────────────────────────────────
 
-static void cc1101Write(uint8_t addr, uint8_t val) {
-    s_hspi.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+static uint8_t cc1101ReadReg(uint8_t addr) {
     digitalWrite(BRESSER_CS_PIN, LOW);
-    delayMicroseconds(2);
-    s_hspi.transfer(addr);
-    s_hspi.transfer(val);
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-    s_hspi.endTransaction();
-}
-
-static uint8_t cc1101Read(uint8_t addr) {
-    s_hspi.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(BRESSER_CS_PIN, LOW);
-    delayMicroseconds(2);
-    s_hspi.transfer(addr | 0x80);
+    // Warte bis MISO LOW (CC1101 bereit)
+    uint32_t t = micros();
+    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
+    s_hspi.transfer(addr | 0x80);   // R-Bit setzen
     uint8_t val = s_hspi.transfer(0x00);
     digitalWrite(BRESSER_CS_PIN, HIGH);
-    s_hspi.endTransaction();
     return val;
 }
 
-static void cc1101Strobe(uint8_t cmd) {
-    s_hspi.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+static uint8_t cc1101ReadStatus(uint8_t addr) {
     digitalWrite(BRESSER_CS_PIN, LOW);
-    delayMicroseconds(2);
-    s_hspi.transfer(cmd);
+    uint32_t t = micros();
+    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
+    s_hspi.transfer(addr | 0xC0);   // R-Bit + Burst-Bit (Status Register)
+    uint8_t val = s_hspi.transfer(0x00);
     digitalWrite(BRESSER_CS_PIN, HIGH);
-    s_hspi.endTransaction();
+    return val;
 }
 
-static void cc1101WriteBurst(uint8_t addr, const uint8_t* data, uint8_t len) {
-    s_hspi.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+static void cc1101WriteReg(uint8_t addr, uint8_t val) {
     digitalWrite(BRESSER_CS_PIN, LOW);
-    delayMicroseconds(2);
-    s_hspi.transfer(addr | 0x40);  // burst write
-    for (uint8_t i = 0; i < len; i++) s_hspi.transfer(data[i]);
+    uint32_t t = micros();
+    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
+    s_hspi.transfer(addr);
+    s_hspi.transfer(val);
     digitalWrite(BRESSER_CS_PIN, HIGH);
-    s_hspi.endTransaction();
+}
+
+static void cc1101Strobe(uint8_t cmd) {
+    digitalWrite(BRESSER_CS_PIN, LOW);
+    uint32_t t = micros();
+    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
+    s_hspi.transfer(cmd);
+    digitalWrite(BRESSER_CS_PIN, HIGH);
 }
 
 static void cc1101ReadBurst(uint8_t addr, uint8_t* data, uint8_t len) {
-    s_hspi.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
     digitalWrite(BRESSER_CS_PIN, LOW);
-    delayMicroseconds(2);
-    s_hspi.transfer(addr | 0xC0);  // burst read
+    uint32_t t = micros();
+    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
+    s_hspi.transfer(addr | 0xC0);
     for (uint8_t i = 0; i < len; i++) data[i] = s_hspi.transfer(0x00);
     digitalWrite(BRESSER_CS_PIN, HIGH);
-    s_hspi.endTransaction();
 }
 
 // ─── CC1101 Reset ─────────────────────────────────────────────────────────────
 
 static bool cc1101Reset() {
+    // Korrekter Reset-Ablauf laut CC1101 Datasheet Section 10.1:
+    // 1. CS HIGH
+    // 2. CS LOW, warte 1µs
+    // 3. CS HIGH, warte 40µs
+    // 4. CS LOW
+    // 5. Warte bis MISO LOW
+    // 6. Sende SRES Strobe (0x30)
+    // 7. Warte bis MISO LOW (Reset abgeschlossen)
+
     digitalWrite(BRESSER_CS_PIN, HIGH);
-    delay(1);
+    delayMicroseconds(5);
     digitalWrite(BRESSER_CS_PIN, LOW);
-    delay(1);
+    delayMicroseconds(10);
     digitalWrite(BRESSER_CS_PIN, HIGH);
-    delay(1);
-    cc1101Strobe(0x30);  // SRES
+    delayMicroseconds(40);
+
+    digitalWrite(BRESSER_CS_PIN, LOW);
+    // Warte bis MISO LOW (Chip bereit)
+    uint32_t t = micros();
+    while (digitalRead(BRESSER_MISO_PIN)) {
+        if (micros() - t > 5000) {
+            Serial.println("[Bresser] MISO timeout beim Reset – MISO bleibt HIGH");
+            Serial.printf("  MISO Pin %d = %d\n", BRESSER_MISO_PIN, digitalRead(BRESSER_MISO_PIN));
+            digitalWrite(BRESSER_CS_PIN, HIGH);
+            return false;
+        }
+    }
+    s_hspi.transfer(0x30);  // SRES
+    // Warte bis MISO wieder LOW (Reset abgeschlossen)
+    t = micros();
+    while (digitalRead(BRESSER_MISO_PIN)) {
+        if (micros() - t > 5000) break;
+    }
+    digitalWrite(BRESSER_CS_PIN, HIGH);
     delay(10);
 
-    // Partnum sollte 0x00, Version 0x14 sein
-    uint8_t part = cc1101Read(0xF0);  // PARTNUM
-    uint8_t ver  = cc1101Read(0xF1);  // VERSION
-    Serial.printf("[Bresser] CC1101 Part=0x%02X Ver=0x%02X\n", part, ver);
-    return (ver == 0x14);
+    // Verifikation: PARTNUM=0x00, VERSION=0x14
+    uint8_t part = cc1101ReadStatus(0x30);  // PARTNUM
+    uint8_t ver  = cc1101ReadStatus(0x31);  // VERSION
+    Serial.printf("[Bresser] Nach Reset: PARTNUM=0x%02X VERSION=0x%02X\n", part, ver);
+
+    // Zusatz-Diagnose: einige Config-Register lesen
+    uint8_t iocfg2 = cc1101ReadReg(0x00);
+    uint8_t iocfg0 = cc1101ReadReg(0x02);
+    Serial.printf("[Bresser] IOCFG2=0x%02X IOCFG0=0x%02X (Default: 0x29, 0x3F)\n",
+                  iocfg2, iocfg0);
+
+    // VERSION 0x14 = standard CC1101, 0x04 = 868MHz Chip-Revision – beide gültig
+    return (ver == 0x14 || ver == 0x04);
 }
 
-// ─── CC1101 für FSK PCM @ 868.35 MHz konfigurieren ───────────────────────────
-// Bresser 7-in-1: FSK_PULSE_PCM, short_width=124µs, long_width=124µs
-// Bitrate: 1/124µs ≈ 8065 bps
-// Deviation: 90kHz (typisch für Bresser)
-// Bandbreite: ~200kHz
+// ─── CC1101 für FSK @ 868.35 MHz konfigurieren ───────────────────────────────
 
 static void cc1101Configure868() {
-    // Register-Konfiguration für FSK, 8065 bps, 868.35 MHz
-    cc1101Write(0x00, 0x06);  // IOCFG2: GDO2 = sync word received
-    cc1101Write(0x02, 0x0D);  // IOCFG0: GDO0 = serial data output (async)
-    cc1101Write(0x07, 0x04);  // PKTCTRL1: no status bytes, no addr check
-    cc1101Write(0x08, 0x32);  // PKTCTRL0: async serial mode, infinite length
-    cc1101Write(0x0B, 0x06);  // FSCTRL1: IF = 152 kHz
-    cc1101Write(0x0C, 0x00);  // FSCTRL0: freq offset = 0
-    // Frequenz: 868.35 MHz → FREQ = 868.35e6 / (26e6/2^16) = 2189848
-    // = 0x2169B8 ... close enough, use 868.3 MHz
-    cc1101Write(0x0D, 0x21);  // FREQ2
-    cc1101Write(0x0E, 0x6B);  // FREQ1
-    cc1101Write(0x0F, 0xD0);  // FREQ0  → 868.35 MHz
-    // Bitrate: 8065 bps → DRATE = (256 + DRATE_M) * 2^DRATE_E / 2^28 * 26e6
-    // 8065 = (256+131) * 2^5 / 2^28 * 26e6 → DRATE_M=131(0x83), E=5
-    cc1101Write(0x10, 0xC8);  // MDMCFG4: BW=203kHz, DRATE_E=8
-    cc1101Write(0x11, 0x93);  // MDMCFG3: DRATE_M=0x93 → ~8054 bps
-    cc1101Write(0x12, 0x10);  // MDMCFG2: FSK, no sync word, no Manchester
-    cc1101Write(0x13, 0x22);  // MDMCFG1: preamble=4 bytes
-    cc1101Write(0x14, 0xF8);  // MDMCFG0: channel spacing
-    cc1101Write(0x15, 0x41);  // DEVIATN: FSK deviation = 90kHz
-    cc1101Write(0x18, 0x18);  // MCSM0: auto-calibrate on IDLE→RX/TX
-    cc1101Write(0x19, 0x1D);  // FOCCFG: freq offset compensation
-    cc1101Write(0x1A, 0x1C);  // BSCFG: bit sync
-    cc1101Write(0x1B, 0xC7);  // AGCCTRL2
-    cc1101Write(0x1C, 0x00);  // AGCCTRL1
-    cc1101Write(0x1D, 0xB0);  // AGCCTRL0
-    cc1101Write(0x21, 0xB6);  // FREND1
-    cc1101Write(0x22, 0x10);  // FREND0
-    cc1101Write(0x23, 0xEA);  // FSCAL3
-    cc1101Write(0x24, 0x2A);  // FSCAL2
-    cc1101Write(0x25, 0x00);  // FSCAL1
-    cc1101Write(0x26, 0x1F);  // FSCAL0
+    cc1101WriteReg(0x00, 0x06);  // IOCFG2
+    cc1101WriteReg(0x02, 0x0D);  // IOCFG0: async serial data out
+    cc1101WriteReg(0x07, 0x04);  // PKTCTRL1
+    cc1101WriteReg(0x08, 0x32);  // PKTCTRL0: async serial, infinite
+    cc1101WriteReg(0x0B, 0x06);  // FSCTRL1
+    cc1101WriteReg(0x0C, 0x00);  // FSCTRL0
+    cc1101WriteReg(0x0D, 0x21);  // FREQ2  \
+    cc1101WriteReg(0x0E, 0x6B);  // FREQ1   > 868.35 MHz
+    cc1101WriteReg(0x0F, 0xD0);  // FREQ0  /
+    cc1101WriteReg(0x10, 0xC8);  // MDMCFG4: BW=203kHz
+    cc1101WriteReg(0x11, 0x93);  // MDMCFG3: ~8054 bps
+    cc1101WriteReg(0x12, 0x10);  // MDMCFG2: FSK, no sync
+    cc1101WriteReg(0x13, 0x22);  // MDMCFG1
+    cc1101WriteReg(0x14, 0xF8);  // MDMCFG0
+    cc1101WriteReg(0x15, 0x41);  // DEVIATN: ~90kHz
+    cc1101WriteReg(0x18, 0x18);  // MCSM0
+    cc1101WriteReg(0x19, 0x1D);  // FOCCFG
+    cc1101WriteReg(0x1A, 0x1C);  // BSCFG
+    cc1101WriteReg(0x1B, 0xC7);  // AGCCTRL2
+    cc1101WriteReg(0x1C, 0x00);  // AGCCTRL1
+    cc1101WriteReg(0x1D, 0xB0);  // AGCCTRL0
+    cc1101WriteReg(0x21, 0xB6);  // FREND1
+    cc1101WriteReg(0x22, 0x10);  // FREND0
+    cc1101WriteReg(0x23, 0xEA);  // FSCAL3
+    cc1101WriteReg(0x24, 0x2A);  // FSCAL2
+    cc1101WriteReg(0x25, 0x00);  // FSCAL1
+    cc1101WriteReg(0x26, 0x1F);  // FSCAL0
 
-    cc1101Strobe(0x34);  // SRX – in Empfangsmodus
+    cc1101Strobe(0x34);  // SRX
     delay(5);
-
     pinMode(BRESSER_GDO0_PIN, INPUT);
     Serial.printf("[Bresser] CC1101 konfiguriert @ %.2f MHz FSK\n", BRESSER_FREQ_MHZ);
 }
 
-// ─── Bresser 7-in-1 Protokoll-Decoder ────────────────────────────────────────
-// Portiert aus rtl_433/src/devices/bresser_7in1.c
-// Lizenz: GPL-2.0 (Christian W. Zuckschwerdt)
-//
-// Preamble: AA AA AA 2D D4
-// Payload:  25 Bytes nach Preamble
-// Whitening: XOR 0xAA
-// Integrity: LFSR-16 digest, generator 0x8810, key 0xba95, final XOR 0x6df1
+// ─── Bresser 7-in-1 Decoder ───────────────────────────────────────────────────
 
 static uint16_t lfsr_digest16(const uint8_t* data, int len,
                                uint16_t gen, uint16_t key) {
@@ -154,19 +163,14 @@ static uint16_t lfsr_digest16(const uint8_t* data, int len,
     return sum;
 }
 
-// Bit-Buffer: wir sammeln Bits aus dem async seriellen Datenstrom
-static constexpr int MSG_BYTES = 25;
-static constexpr int PREAMBLE_LEN = 5;  // AA AA AA 2D D4
-
-static const uint8_t PREAMBLE[] = { 0xAA, 0xAA, 0xAA, 0x2D, 0xD4 };
-
-// Bit-Ring-Buffer für den seriellen Datenstrom
+static constexpr int MSG_BYTES     = 25;
+static constexpr int PREAMBLE_LEN  = 5;
+static const uint8_t PREAMBLE[]    = { 0xAA, 0xAA, 0xAA, 0x2D, 0xD4 };
 static constexpr int BIT_BUF_BYTES = 64;
-static uint8_t  s_bitBuf[BIT_BUF_BYTES] = {};
-static int      s_bitPos  = 0;   // aktuelle Bit-Position (gesamt)
-static uint32_t s_lastBit = 0;   // Zeitpunkt letztes Bit
 
-// Fügt ein Bit in den Ringbuffer
+static uint8_t  s_bitBuf[BIT_BUF_BYTES] = {};
+static int      s_bitPos = 0;
+
 static void pushBit(uint8_t bit) {
     int byteIdx = (s_bitPos / 8) % BIT_BUF_BYTES;
     int bitIdx  = 7 - (s_bitPos % 8);
@@ -175,31 +179,25 @@ static void pushBit(uint8_t bit) {
     s_bitPos++;
 }
 
-// Sucht Preamble und extrahiert Nachricht
 static bool findAndExtract(uint8_t* msg) {
-    // Suche Preamble im Ringbuffer
-    // Wir müssen mindestens PREAMBLE_LEN + MSG_BYTES Bytes haben
-    int totalBits = s_bitPos;
-    if (totalBits < (PREAMBLE_LEN + MSG_BYTES) * 8) return false;
+    int totalBytes = s_bitPos / 8;
+    if (totalBytes < PREAMBLE_LEN + MSG_BYTES) return false;
 
-    // Linearen Buffer aus Ringbuffer aufbauen (letzte ~400 Bits)
-    int checkBytes = min(totalBits / 8, BIT_BUF_BYTES);
+    int checkBytes = min(totalBytes, BIT_BUF_BYTES);
     uint8_t linear[BIT_BUF_BYTES];
     for (int i = 0; i < checkBytes; i++) {
-        linear[i] = s_bitBuf[(s_bitPos / 8 - checkBytes + i) % BIT_BUF_BYTES];
+        linear[i] = s_bitBuf[(s_bitPos / 8 - checkBytes + i + BIT_BUF_BYTES) % BIT_BUF_BYTES];
     }
 
-    // Preamble suchen
     for (int i = 0; i <= checkBytes - PREAMBLE_LEN - MSG_BYTES; i++) {
         bool match = true;
         for (int j = 0; j < PREAMBLE_LEN; j++) {
             if (linear[i+j] != PREAMBLE[j]) { match = false; break; }
         }
-        if (!match) continue;
-
-        // Preamble gefunden – Nachricht extrahieren
-        memcpy(msg, &linear[i + PREAMBLE_LEN], MSG_BYTES);
-        return true;
+        if (match) {
+            memcpy(msg, &linear[i + PREAMBLE_LEN], MSG_BYTES);
+            return true;
+        }
     }
     return false;
 }
@@ -208,20 +206,15 @@ static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) 
     uint8_t msg[MSG_BYTES];
     memcpy(msg, rawMsg, MSG_BYTES);
 
-    // Sensor-Typ (vor Whitening-Entfernung)
-    if (msg[21] == 0x00) return false;  // Sanity check
-
     int s_type   = msg[6] >> 4;
     int nstartup = (msg[6] & 0x08) >> 3;
 
-    // Whitening entfernen
-    for (int i = 0; i < MSG_BYTES; i++) msg[i] ^= 0xAA;
+    for (int i = 0; i < MSG_BYTES; i++) msg[i] ^= 0xAA;  // de-whitening
 
-    // LFSR-16 Digest prüfen
     uint16_t chk    = ((uint16_t)msg[0] << 8) | msg[1];
     uint16_t digest = lfsr_digest16(&msg[2], 23, 0x8810, 0xBA95);
     if ((chk ^ digest) != 0x6DF1) {
-        Serial.printf("[Bresser] Digest fail: %04X vs %04X\n", chk, digest ^ chk);
+        Serial.printf("[Bresser] Digest fail\n");
         return false;
     }
 
@@ -235,7 +228,6 @@ static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) 
     doc["startup"]    = !nstartup;
 
     if (s_type == 1 || s_type == 12 || s_type == 13) {
-        // Wetterstation (7-in-1, 3-in-1, 8-in-1)
         int wdir     = (msg[4] >> 4) * 100 + (msg[4] & 0x0F) * 10 + (msg[5] >> 4);
         int wgst_raw = (msg[7] >> 4) * 100 + (msg[7] & 0x0F) * 10 + (msg[8] >> 4);
         int wavg_raw = (msg[8] & 0x0F) * 100 + (msg[9] >> 4) * 10 + (msg[9] & 0x0F);
@@ -250,53 +242,37 @@ static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) 
                      + (msg[19] >> 4) * 10     + (msg[19] & 0x0F);
         int uv_raw   = (msg[20] >> 4) * 100 + (msg[20] & 0x0F) * 10 + (msg[21] >> 4);
 
-        doc["model"]          = (s_type == 12) ? "Bresser-3in1" : "Bresser-7in1";
-        doc["temperature_C"]  = serialized(String(temp_c, 1));
-        doc["humidity"]       = hum;
-        doc["rain_mm"]        = serialized(String(rain_raw * 0.1f, 1));
+        doc["model"]         = (s_type == 12) ? "Bresser-3in1" : "Bresser-7in1";
+        doc["temperature_C"] = serialized(String(temp_c, 1));
+        doc["humidity"]      = hum;
+        doc["rain_mm"]       = serialized(String(rain_raw * 0.1f, 1));
         if (s_type != 12) {
-            doc["wind_max_m_s"]  = serialized(String(wgst_raw * 0.1f, 1));
-            doc["wind_avg_m_s"]  = serialized(String(wavg_raw * 0.1f, 1));
-            doc["wind_dir_deg"]  = wdir;
-            doc["light_lux"]     = (float)lght_raw;
-            doc["uvi"]           = serialized(String(uv_raw * 0.1f, 1));
+            doc["wind_max_m_s"] = serialized(String(wgst_raw * 0.1f, 1));
+            doc["wind_avg_m_s"] = serialized(String(wavg_raw * 0.1f, 1));
+            doc["wind_dir_deg"] = wdir;
+            doc["light_lux"]    = (float)lght_raw;
+            doc["uvi"]          = serialized(String(uv_raw * 0.1f, 1));
         }
-        if (s_type == 13 && (msg[23] >> 4) < 10) {
-            float tglobe = (msg[22] >> 4) * 10 + (msg[22] & 0x0F) + (msg[23] >> 4) * 0.1f;
-            doc["temperature_globe_C"] = serialized(String(tglobe, 1));
-        }
-
     } else if (s_type == 8) {
-        // Air Quality PM2.5/PM10
-        int pm25     = (msg[10] & 0x0F) * 1000 + (msg[11] >> 4) * 100
-                     + (msg[11] & 0x0F) * 10   + (msg[12] >> 4);
-        int pm10     = (msg[12] & 0x0F) * 1000 + (msg[13] >> 4) * 100
-                     + (msg[13] & 0x0F) * 10   + (msg[14] >> 4);
-        bool pm25_ok = (msg[10] & 0x0F) != 0x0F;
-        bool pm10_ok = (msg[12] & 0x0F) != 0x0F;
-        doc["model"]   = "Bresser-AirPM";
-        if (pm25_ok) doc["pm2_5_ug_m3"]  = pm25;
-        if (pm10_ok) doc["pm10_0_ug_m3"] = pm10;
-
+        int pm25 = (msg[10] & 0x0F) * 1000 + (msg[11] >> 4) * 100
+                 + (msg[11] & 0x0F) * 10   + (msg[12] >> 4);
+        int pm10 = (msg[12] & 0x0F) * 1000 + (msg[13] >> 4) * 100
+                 + (msg[13] & 0x0F) * 10   + (msg[14] >> 4);
+        doc["model"]        = "Bresser-AirPM";
+        doc["pm2_5_ug_m3"]  = pm25;
+        doc["pm10_0_ug_m3"] = pm10;
     } else if (s_type == 10) {
-        // CO2
-        int co2    = ((msg[4] & 0xF0) >> 4) * 1000 + (msg[4] & 0x0F) * 100
-                   + ((msg[5] & 0xF0) >> 4) * 10   + (msg[5] & 0x0F);
-        bool co2ok = (msg[5] & 0x0F) != 0x0F;
-        doc["model"] = "Bresser-CO2";
-        if (co2ok) doc["co2_ppm"] = co2;
-
+        int co2 = ((msg[4] & 0xF0) >> 4) * 1000 + (msg[4] & 0x0F) * 100
+                + ((msg[5] & 0xF0) >> 4) * 10   + (msg[5] & 0x0F);
+        doc["model"]   = "Bresser-CO2";
+        doc["co2_ppm"] = co2;
     } else if (s_type == 11) {
-        // HCHO/VOC
-        int hcho    = ((msg[4] & 0xF0) >> 4) * 1000 + (msg[4] & 0x0F) * 100
-                    + ((msg[5] & 0xF0) >> 4) * 10   + (msg[5] & 0x0F);
-        int voc     = msg[22] & 0x0F;
-        bool hchook = (msg[5] & 0x0F) != 0x0F;
-        bool vocok  = voc != 0x0F;
-        doc["model"] = "Bresser-HCHOVOC";
-        if (hchook) doc["hcho_ppb"]  = hcho;
-        if (vocok)  doc["voc_level"] = voc;
-
+        int hcho = ((msg[4] & 0xF0) >> 4) * 1000 + (msg[4] & 0x0F) * 100
+                 + ((msg[5] & 0xF0) >> 4) * 10   + (msg[5] & 0x0F);
+        int voc  = msg[22] & 0x0F;
+        doc["model"]    = "Bresser-HCHOVOC";
+        doc["hcho_ppb"] = hcho;
+        if (voc != 0x0F) doc["voc_level"] = voc;
     } else {
         Serial.printf("[Bresser] Unbekannter Sensor-Typ: %d\n", s_type);
         return false;
@@ -306,70 +282,73 @@ static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) 
     return true;
 }
 
-// ─── ISR: Bit-Sampling via GDO0 ──────────────────────────────────────────────
-// Der CC1101 gibt im Async-RX-Mode den demodulierten Bitstrom auf GDO0 aus.
-// Wir sampeln mit einem Timer alle 124µs (= 1/8065 bps).
+// ─── Hardware-Timer: Bit-Sampling alle 124µs ──────────────────────────────────
 
-static hw_timer_t*     s_timer   = nullptr;
-static volatile bool   s_newBit  = false;
+static hw_timer_t*      s_timer  = nullptr;
 static volatile uint8_t s_curBit = 0;
+static volatile bool    s_newBit = false;
 
 void IRAM_ATTR bresserTimerISR() {
     s_curBit = digitalRead(BRESSER_GDO0_PIN);
     s_newBit = true;
 }
 
-// ─── Zustandsmaschine für Byte-Empfang ───────────────────────────────────────
-
-static constexpr int TIMER_US = 124;  // 1 Bit-Periode
-
-static enum { IDLE, SYNCING, RECEIVING } s_state = IDLE;
-static uint8_t  s_rxByte   = 0;
-static int      s_rxBitCnt = 0;
-static uint8_t  s_rxBuf[PREAMBLE_LEN + MSG_BYTES + 4];
-static int      s_rxByteCnt = 0;
-
-static bool s_frameReady  = false;
-static uint8_t s_frameMsg[MSG_BYTES];
-
 // ─── Öffentliche API ─────────────────────────────────────────────────────────
 
 void bresserInit(PubSubClient& client) {
     s_client = &client;
 
-    s_hspi.begin(BRESSER_SCK_PIN, BRESSER_MISO_PIN, BRESSER_MOSI_PIN, BRESSER_CS_PIN);
-    pinMode(BRESSER_CS_PIN, OUTPUT);
+    pinMode(BRESSER_CS_PIN,   OUTPUT);
+    pinMode(BRESSER_MISO_PIN, INPUT);
     digitalWrite(BRESSER_CS_PIN, HIGH);
     delay(10);
 
-    if (!cc1101Reset()) {
-        Serial.println("[Bresser] CC1101 nicht gefunden!");
+    s_hspi.begin(BRESSER_SCK_PIN, BRESSER_MISO_PIN, BRESSER_MOSI_PIN, BRESSER_CS_PIN);
+    s_hspi.setFrequency(1000000);  // 1MHz – stabil auf allen Breakout-Boards
+    s_hspi.setDataMode(SPI_MODE0);
+    s_hspi.setBitOrder(MSBFIRST);
+    delay(10);
+
+    bool found = false;
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        if (cc1101Reset()) { found = true; break; }
+        Serial.printf("[Bresser] Versuch %d fehlgeschlagen\n", attempt);
+        delay(100);
+    }
+
+    if (!found) {
+        Serial.println("[Bresser] CC1101 nicht gefunden! Pins prüfen:");
+        Serial.printf("  SCK=%d MISO=%d MOSI=%d CS=%d GDO0=%d\n",
+                      BRESSER_SCK_PIN, BRESSER_MISO_PIN,
+                      BRESSER_MOSI_PIN, BRESSER_CS_PIN, BRESSER_GDO0_PIN);
+        // MISO-Pegel direkt messen als Diagnose
+        Serial.printf("  MISO direkt: %d (soll beim Reset 0 werden)\n",
+                      digitalRead(BRESSER_MISO_PIN));
         return;
     }
+
     cc1101Configure868();
 
-    // Hardware-Timer für Bit-Sampling (124µs Periode)
-    s_timer = timerBegin(1, 80, true);  // Timer 1, 80MHz/80=1MHz, count-up
+    s_timer = timerBegin(1, 80, true);
     timerAttachInterrupt(s_timer, &bresserTimerISR, true);
-    timerAlarmWrite(s_timer, TIMER_US, true);  // Alarm alle 124µs
+    timerAlarmWrite(s_timer, 124, true);
     timerAlarmEnable(s_timer);
 
-    Serial.println("[Bresser] RX-Timer aktiv (124µs Sampling)");
+    s_ready = true;
+    Serial.println("[Bresser] Bereit");
 }
 
 void bresserLoop() {
-    if (!s_newBit) return;
+    if (!s_ready || !s_newBit) return;
     uint8_t bit = s_curBit;
     s_newBit = false;
 
     pushBit(bit);
 
-    // Nachricht suchen und dekodieren
     uint8_t msg[MSG_BYTES];
     if (!findAndExtract(msg)) return;
 
-    // Prüfen ob Nachricht identisch mit letzter (Debounce)
-    static uint8_t lastMsg[MSG_BYTES] = {};
+    static uint8_t  lastMsg[MSG_BYTES] = {};
     static uint32_t lastTime = 0;
     if (memcmp(msg, lastMsg, MSG_BYTES) == 0 && (millis() - lastTime) < 60000) return;
     memcpy(lastMsg, msg, MSG_BYTES);
@@ -378,12 +357,11 @@ void bresserLoop() {
     char json[384];
     if (!bresserDecode(msg, json, sizeof(json))) return;
 
-    Serial.printf("[Bresser] → %s : %s\n", BRESSER_MQTT_TOPIC, json);
+    Serial.printf("[Bresser] → %s\n", json);
     if (s_client && s_client->connected()) {
         s_client->publish(BRESSER_MQTT_TOPIC, json, false);
     }
 
-    // Bit-Buffer zurücksetzen nach erfolgreichem Decode
     s_bitPos = 0;
     memset(s_bitBuf, 0, sizeof(s_bitBuf));
 }

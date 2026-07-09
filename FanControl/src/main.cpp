@@ -30,26 +30,22 @@ void setup() {
     Serial.println("\n=== RF Controller (ESP32) ===");
 
     wifiConnect();
-    ota.init();
 
     mqttInit(mqttClient);
     bresserInit(mqttClient);
+    ota.init();
 }
 
 void loop() {
-    // WiFi-Reconnect
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[WiFi] Verbindung verloren – reconnect...");
         wifiConnect();
     }
 
-    // MQTT + Fan/Lamp RF
-    mqttLoop(mqttClient);  // connect + client.loop() + retained filter
-    rfLoop();              // Fan+Lamp RX dekodieren → callbacks
-    fanLoop();             // Dimmer-Tick
-    lampLoop();            // (aktuell leer)
+    mqttLoop(mqttClient);   // connect + client.loop()
+    rfLoop();               // Fan+Lamp RX dekodieren → Callbacks
+    fanLoop();              // Dimmer-Tick
+    lampLoop();             // (Erweiterungspunkt)
+    bresserLoop();          // Bresser 868MHz RX
     ota.handle();
-
-    // Bresser Wetterstation (868 MHz, zweiter CC1101)
-    bresserLoop();
 }
