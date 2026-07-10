@@ -98,5 +98,9 @@
 #define BRESSER_CS_PIN    15
 #define BRESSER_GDO0_PIN  4    // Datenausgang (RX)
 
-#define BRESSER_FREQ_MHZ  868.35
-#define BRESSER_MQTT_TOPIC "weather/bresser7in1"
+#define BRESSER_FREQ_MHZ    868.35
+#define BRESSER_MQTT_TOPIC  "weather/bresser7in1"
+
+#define BINARY_CLOCK_PIN         27
+#define BINARY_CLOCK_LED_COUNT   13
+#define BINARY_CLOCK_MQTT_TOPIC  "binaryClock"

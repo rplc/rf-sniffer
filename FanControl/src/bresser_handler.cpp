@@ -119,9 +119,9 @@ static void cc1101Configure868() {
     cc1101WriteReg(0x08, 0x32);  // PKTCTRL0: async serial, infinite
     cc1101WriteReg(0x0B, 0x06);  // FSCTRL1
     cc1101WriteReg(0x0C, 0x00);  // FSCTRL0
-    cc1101WriteReg(0x0D, 0x21);  // FREQ2  \
-    cc1101WriteReg(0x0E, 0x6B);  // FREQ1   > 868.35 MHz
-    cc1101WriteReg(0x0F, 0xD0);  // FREQ0  /
+    cc1101WriteReg(0x0D, 0x21);  // FREQ2  
+    cc1101WriteReg(0x0E, 0x66);  // FREQ1   > 868.3 MHz
+    cc1101WriteReg(0x0F, 0x0A);  // FREQ0 
     cc1101WriteReg(0x10, 0xC8);  // MDMCFG4: BW=203kHz
     cc1101WriteReg(0x11, 0x93);  // MDMCFG3: ~8054 bps
     cc1101WriteReg(0x12, 0x10);  // MDMCFG2: FSK, no sync

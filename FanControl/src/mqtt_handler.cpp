@@ -1,6 +1,7 @@
 #include "mqtt_handler.h"
 #include "fan_handler.h"
 #include "lamp_handler.h"
+#include "binary_clock_handler.h"
 #include "rf_handler.h"
 #include "config.h"
 
@@ -41,6 +42,11 @@ static void onMessage(const char* topic, uint8_t* payload, unsigned int length) 
             lampOnMqttMessage(topic, payload, length);
             return;
         }
+    }
+
+    if (strcmp(topic, BINARY_CLOCK_MQTT_TOPIC) == 0) {
+        binaryClockOnMqttMessage(topic, payload, length);
+        return;
     }
     Serial.printf("[MQTT] Unbekanntes Topic: %s\n", topic);
 }
