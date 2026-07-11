@@ -1,7 +1,6 @@
 #include "lamp_handler.h"
 #include "rf_handler.h"
 #include "config.h"
-#include <SmartRC_CC1101.h>
 #include <ArduinoJson.h>
 #include <rom/ets_sys.h>
 

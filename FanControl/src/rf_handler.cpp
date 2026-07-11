@@ -1,6 +1,13 @@
 #include "rf_handler.h"
 #include "config.h"
-#include <SmartRC_CC1101.h>
+#include <SPI.h>
+#include <RadioLib.h>
+
+// ─── CC1101 (RadioLib) ───────────────────────────────────────────────────────
+// Eigener SPI-Bus (VSPI), damit der Bresser-CC1101 (HSPI) unangetastet bleibt.
+static SPIClass s_vspi(VSPI);
+static Module   s_mod(CC1101_CS_PIN, CC1101_GDO0_PIN, RADIOLIB_NC, RADIOLIB_NC, s_vspi);
+static CC1101   s_radio(&s_mod);
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -139,20 +146,18 @@ void rfEnterTx() {
         detachInterrupt(CC1101_GDO0_PIN);
         s_rxActive = false;
     }
-    ELECHOUSE_cc1101.SpiStrobe(0x36);          // SIDLE
-    delay(2);
-    ELECHOUSE_cc1101.SpiWriteReg(0x12, 0x30); // MDMCFG2: OOK, kein Sync
-    ELECHOUSE_cc1101.SetTx();
+    s_radio.standby();               // SIDLE
+    delay(2);                         // Settling-Zeit
+    s_radio.transmitDirectAsync();    // IOCFG0/PKTCTRL0 = async OOK, STX-Strobe
     pinMode(CC1101_GDO0_PIN, OUTPUT);
     digitalWrite(CC1101_GDO0_PIN, LOW);
     delayMicroseconds(500);
 }
 
 void rfEnterRx() {
-    ELECHOUSE_cc1101.SpiStrobe(0x36);          // SIDLE
-    delay(2);
-    ELECHOUSE_cc1101.SpiWriteReg(0x12, 0x30); // MDMCFG2: OOK, kein Sync
-    ELECHOUSE_cc1101.SetRx();
+    s_radio.standby();               // SIDLE
+    delay(2);                         // Settling-Zeit
+    s_radio.receiveDirectAsync();     // IOCFG0/PKTCTRL0 = async OOK, SRX-Strobe
     delay(2);
     pinMode(CC1101_GDO0_PIN, INPUT);
 
@@ -227,21 +232,20 @@ bool rfInit(FanRxCallback fanCb, LampRxCallback lampCb) {
     s_buf[1] = {};
     s_writeIdx = 0;
 
-    ELECHOUSE_cc1101.setSpiPin(CC1101_SCK_PIN, CC1101_MISO_PIN,
-                                CC1101_MOSI_PIN, CC1101_CS_PIN);
-    ELECHOUSE_cc1101.Init();
+    s_vspi.begin(CC1101_SCK_PIN, CC1101_MISO_PIN, CC1101_MOSI_PIN, CC1101_CS_PIN);
 
-    if (!ELECHOUSE_cc1101.getCC1101()) {
-        Serial.println("[RF] CC1101 nicht gefunden – SPI prüfen");
+    int16_t state = s_radio.begin(RF_FREQ_MHZ);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[RF] CC1101 nicht gefunden – SPI prüfen (Code %d)\n", state);
         return false;
     }
 
-    ELECHOUSE_cc1101.setMHZ(RF_FREQ_MHZ);
-    ELECHOUSE_cc1101.setModulation(2);  // OOK/ASK
-    ELECHOUSE_cc1101.setPA(12);
+    s_radio.setOOK(true);                // MDMCFG2: ASK/OOK-Modulation
+    s_radio.disableSyncWordFiltering();   // MDMCFG2: kein Sync-Wort (== altes 0x30)
+    s_radio.setOutputPower(12);           // ~12 dBm, wie altes setPA(12)
 
-    uint8_t ver = ELECHOUSE_cc1101.SpiReadReg(0x31 | 0x80);
-    Serial.printf("[RF] CC1101 OK @ %.2f MHz | Ver=0x%02X\n", RF_FREQ_MHZ, ver);
+    Serial.printf("[RF] CC1101 OK @ %.2f MHz | Ver=0x%02X\n",
+                  RF_FREQ_MHZ, s_radio.getChipVersion());
 
     rfEnterRx();  // direkt in RX starten
     return true;
