@@ -96,10 +96,11 @@
 #define BRESSER_MISO_PIN  12
 #define BRESSER_MOSI_PIN  13
 #define BRESSER_CS_PIN    15
-#define BRESSER_GDO0_PIN  4    // Datenausgang (RX)
+#define BRESSER_GDO0_PIN  4    // Paket-Empfangen-IRQ (RadioLib startReceive())
 
-#define BRESSER_FREQ_MHZ    868.35
+#define BRESSER_FREQ_MHZ    868.3
 #define BRESSER_MQTT_TOPIC  "weather/bresser7in1"
+#define BRESSER_RX_DEBOUNCE_MS 60000  // gleiche Nachricht 60s nicht erneut publishen
 
 #define BINARY_CLOCK_PIN         27
 #define BINARY_CLOCK_LED_COUNT   13

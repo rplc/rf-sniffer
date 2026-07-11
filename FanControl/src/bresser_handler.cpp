@@ -1,153 +1,36 @@
 #include "bresser_handler.h"
 #include "config.h"
 #include <SPI.h>
+#include <RadioLib.h>
 #include <ArduinoJson.h>
 
+// ─── CC1101 (RadioLib) ───────────────────────────────────────────────────────
+// Eigener SPI-Bus (HSPI), 433MHz-CC1101 (rf_handler) läuft auf VSPI.
+// GDO0 ist hier NICHT mehr ein bit-gebangter Rohdatenausgang, sondern die
+// Paket-Empfangen-IRQ-Leitung von RadioLib (fixedPacketLengthMode + FIFO).
 static SPIClass      s_hspi(HSPI);
-static PubSubClient* s_client  = nullptr;
-static bool          s_ready   = false;
+static Module        s_mod(BRESSER_CS_PIN, BRESSER_GDO0_PIN, RADIOLIB_NC, RADIOLIB_NC, s_hspi);
+static CC1101        s_radio(&s_mod);
 
-// ─── CC1101 SPI-Zugriff (HSPI) ───────────────────────────────────────────────
+static PubSubClient* s_client = nullptr;
+static bool          s_ready  = false;
 
-static uint8_t cc1101ReadReg(uint8_t addr) {
-    digitalWrite(BRESSER_CS_PIN, LOW);
-    // Warte bis MISO LOW (CC1101 bereit)
-    uint32_t t = micros();
-    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
-    s_hspi.transfer(addr | 0x80);   // R-Bit setzen
-    uint8_t val = s_hspi.transfer(0x00);
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-    return val;
+// Gesamte Paketlänge im CC1101 Fixed-Length-Modus. Aufbau (siehe Konfiguration
+// unten): [0]=0xD4 (letztes Sync-Byte, landet als erstes FIFO-Byte im Payload,
+// siehe Kommentar bei setSyncWord), [1..25]=eigentliche 25 Bresser-7in1-Bytes,
+// [26]=1 Byte Reserve.
+static constexpr uint8_t MSG_BUF_SIZE = 27;
+static constexpr int     MSG_BYTES    = 25;
+
+// ─── ISR: Paket vollständig empfangen ────────────────────────────────────────
+
+static volatile bool s_receivedFlag = false;
+
+void IRAM_ATTR bresserPacketISR() {
+    s_receivedFlag = true;
 }
 
-static uint8_t cc1101ReadStatus(uint8_t addr) {
-    digitalWrite(BRESSER_CS_PIN, LOW);
-    uint32_t t = micros();
-    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
-    s_hspi.transfer(addr | 0xC0);   // R-Bit + Burst-Bit (Status Register)
-    uint8_t val = s_hspi.transfer(0x00);
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-    return val;
-}
-
-static void cc1101WriteReg(uint8_t addr, uint8_t val) {
-    digitalWrite(BRESSER_CS_PIN, LOW);
-    uint32_t t = micros();
-    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
-    s_hspi.transfer(addr);
-    s_hspi.transfer(val);
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-}
-
-static void cc1101Strobe(uint8_t cmd) {
-    digitalWrite(BRESSER_CS_PIN, LOW);
-    uint32_t t = micros();
-    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
-    s_hspi.transfer(cmd);
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-}
-
-static void cc1101ReadBurst(uint8_t addr, uint8_t* data, uint8_t len) {
-    digitalWrite(BRESSER_CS_PIN, LOW);
-    uint32_t t = micros();
-    while (digitalRead(BRESSER_MISO_PIN) && (micros() - t < 1000));
-    s_hspi.transfer(addr | 0xC0);
-    for (uint8_t i = 0; i < len; i++) data[i] = s_hspi.transfer(0x00);
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-}
-
-// ─── CC1101 Reset ─────────────────────────────────────────────────────────────
-
-static bool cc1101Reset() {
-    // Korrekter Reset-Ablauf laut CC1101 Datasheet Section 10.1:
-    // 1. CS HIGH
-    // 2. CS LOW, warte 1µs
-    // 3. CS HIGH, warte 40µs
-    // 4. CS LOW
-    // 5. Warte bis MISO LOW
-    // 6. Sende SRES Strobe (0x30)
-    // 7. Warte bis MISO LOW (Reset abgeschlossen)
-
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-    delayMicroseconds(5);
-    digitalWrite(BRESSER_CS_PIN, LOW);
-    delayMicroseconds(10);
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-    delayMicroseconds(40);
-
-    digitalWrite(BRESSER_CS_PIN, LOW);
-    // Warte bis MISO LOW (Chip bereit)
-    uint32_t t = micros();
-    while (digitalRead(BRESSER_MISO_PIN)) {
-        if (micros() - t > 5000) {
-            Serial.println("[Bresser] MISO timeout beim Reset - MISO bleibt HIGH");
-            Serial.printf("  MISO Pin %d = %d\n", BRESSER_MISO_PIN, digitalRead(BRESSER_MISO_PIN));
-            digitalWrite(BRESSER_CS_PIN, HIGH);
-            return false;
-        }
-    }
-    s_hspi.transfer(0x30);  // SRES
-    // Warte bis MISO wieder LOW (Reset abgeschlossen)
-    t = micros();
-    while (digitalRead(BRESSER_MISO_PIN)) {
-        if (micros() - t > 5000) break;
-    }
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-    delay(10);
-
-    // Verifikation: PARTNUM=0x00, VERSION=0x14
-    uint8_t part = cc1101ReadStatus(0x30);  // PARTNUM
-    uint8_t ver  = cc1101ReadStatus(0x31);  // VERSION
-    Serial.printf("[Bresser] Nach Reset: PARTNUM=0x%02X VERSION=0x%02X\n", part, ver);
-
-    // Zusatz-Diagnose: einige Config-Register lesen
-    uint8_t iocfg2 = cc1101ReadReg(0x00);
-    uint8_t iocfg0 = cc1101ReadReg(0x02);
-    Serial.printf("[Bresser] IOCFG2=0x%02X IOCFG0=0x%02X (Default: 0x29, 0x3F)\n",
-                  iocfg2, iocfg0);
-
-    // VERSION 0x14 = standard CC1101, 0x04 = 868MHz Chip-Revision - beide gültig
-    return (ver == 0x14 || ver == 0x04);
-}
-
-// ─── CC1101 für FSK @ 868.35 MHz konfigurieren ───────────────────────────────
-
-static void cc1101Configure868() {
-    cc1101WriteReg(0x00, 0x06);  // IOCFG2
-    cc1101WriteReg(0x02, 0x0D);  // IOCFG0: async serial data out
-    cc1101WriteReg(0x07, 0x04);  // PKTCTRL1
-    cc1101WriteReg(0x08, 0x32);  // PKTCTRL0: async serial, infinite
-    cc1101WriteReg(0x0B, 0x06);  // FSCTRL1
-    cc1101WriteReg(0x0C, 0x00);  // FSCTRL0
-    cc1101WriteReg(0x0D, 0x21);  // FREQ2  
-    cc1101WriteReg(0x0E, 0x66);  // FREQ1   > 868.3 MHz
-    cc1101WriteReg(0x0F, 0x0A);  // FREQ0 
-    cc1101WriteReg(0x10, 0xC8);  // MDMCFG4: BW=203kHz
-    cc1101WriteReg(0x11, 0x93);  // MDMCFG3: ~8054 bps
-    cc1101WriteReg(0x12, 0x10);  // MDMCFG2: FSK, no sync
-    cc1101WriteReg(0x13, 0x22);  // MDMCFG1
-    cc1101WriteReg(0x14, 0xF8);  // MDMCFG0
-    cc1101WriteReg(0x15, 0x41);  // DEVIATN: ~90kHz
-    cc1101WriteReg(0x18, 0x18);  // MCSM0
-    cc1101WriteReg(0x19, 0x1D);  // FOCCFG
-    cc1101WriteReg(0x1A, 0x1C);  // BSCFG
-    cc1101WriteReg(0x1B, 0xC7);  // AGCCTRL2
-    cc1101WriteReg(0x1C, 0x00);  // AGCCTRL1
-    cc1101WriteReg(0x1D, 0xB0);  // AGCCTRL0
-    cc1101WriteReg(0x21, 0xB6);  // FREND1
-    cc1101WriteReg(0x22, 0x10);  // FREND0
-    cc1101WriteReg(0x23, 0xEA);  // FSCAL3
-    cc1101WriteReg(0x24, 0x2A);  // FSCAL2
-    cc1101WriteReg(0x25, 0x00);  // FSCAL1
-    cc1101WriteReg(0x26, 0x1F);  // FSCAL0
-
-    cc1101Strobe(0x34);  // SRX
-    delay(5);
-    pinMode(BRESSER_GDO0_PIN, INPUT);
-    Serial.printf("[Bresser] CC1101 konfiguriert @ %.2f MHz FSK\n", BRESSER_FREQ_MHZ);
-}
-
-// ─── Bresser 7-in-1 Decoder ───────────────────────────────────────────────────
+// ─── Bresser 7-in-1 Decoder (unverändert – Vorlage: rtl_433 bresser_7in1.c) ──
 
 static uint16_t lfsr_digest16(const uint8_t* data, int len,
                                uint16_t gen, uint16_t key) {
@@ -161,45 +44,6 @@ static uint16_t lfsr_digest16(const uint8_t* data, int len,
         }
     }
     return sum;
-}
-
-static constexpr int MSG_BYTES     = 25;
-static constexpr int PREAMBLE_LEN  = 5;
-static const uint8_t PREAMBLE[]    = { 0xAA, 0xAA, 0xAA, 0x2D, 0xD4 };
-static constexpr int BIT_BUF_BYTES = 64;
-
-static uint8_t  s_bitBuf[BIT_BUF_BYTES] = {};
-static int      s_bitPos = 0;
-
-static void pushBit(uint8_t bit) {
-    int byteIdx = (s_bitPos / 8) % BIT_BUF_BYTES;
-    int bitIdx  = 7 - (s_bitPos % 8);
-    if (bitIdx == 7) s_bitBuf[byteIdx] = 0;
-    s_bitBuf[byteIdx] |= (bit << bitIdx);
-    s_bitPos++;
-}
-
-static bool findAndExtract(uint8_t* msg) {
-    int totalBytes = s_bitPos / 8;
-    if (totalBytes < PREAMBLE_LEN + MSG_BYTES) return false;
-
-    int checkBytes = min(totalBytes, BIT_BUF_BYTES);
-    uint8_t linear[BIT_BUF_BYTES];
-    for (int i = 0; i < checkBytes; i++) {
-        linear[i] = s_bitBuf[(s_bitPos / 8 - checkBytes + i + BIT_BUF_BYTES) % BIT_BUF_BYTES];
-    }
-
-    for (int i = 0; i <= checkBytes - PREAMBLE_LEN - MSG_BYTES; i++) {
-        bool match = true;
-        for (int j = 0; j < PREAMBLE_LEN; j++) {
-            if (linear[i+j] != PREAMBLE[j]) { match = false; break; }
-        }
-        if (match) {
-            memcpy(msg, &linear[i + PREAMBLE_LEN], MSG_BYTES);
-            return true;
-        }
-    }
-    return false;
 }
 
 static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) {
@@ -282,86 +126,89 @@ static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) 
     return true;
 }
 
-// ─── Hardware-Timer: Bit-Sampling alle 124µs ──────────────────────────────────
-
-static hw_timer_t*      s_timer  = nullptr;
-static volatile uint8_t s_curBit = 0;
-static volatile bool    s_newBit = false;
-
-void IRAM_ATTR bresserTimerISR() {
-    s_curBit = digitalRead(BRESSER_GDO0_PIN);
-    s_newBit = true;
-}
-
 // ─── Öffentliche API ─────────────────────────────────────────────────────────
 
 void bresserInit(PubSubClient& client) {
     s_client = &client;
 
-    pinMode(BRESSER_CS_PIN,   OUTPUT);
-    pinMode(BRESSER_MISO_PIN, INPUT);
-    digitalWrite(BRESSER_CS_PIN, HIGH);
-    delay(10);
-
     s_hspi.begin(BRESSER_SCK_PIN, BRESSER_MISO_PIN, BRESSER_MOSI_PIN, BRESSER_CS_PIN);
-    s_hspi.setFrequency(1000000);  // 1MHz - stabil auf allen Breakout-Boards
-    s_hspi.setDataMode(SPI_MODE0);
-    s_hspi.setBitOrder(MSBFIRST);
-    delay(10);
 
-    bool found = false;
-    for (int attempt = 1; attempt <= 3; attempt++) {
-        if (cc1101Reset()) { found = true; break; }
-        Serial.printf("[Bresser] Versuch %d fehlgeschlagen\n", attempt);
-        delay(100);
-    }
+    // Konfiguration 1:1 übernommen von matthias-bs/BresserWeatherSensorReceiver
+    // (aktiv gepflegtes, nachweislich funktionierendes RadioLib+CC1101-Setup für
+    // exakt diesen Sensor). Quelle für die "krummen" Werte:
+    // https://github.com/RFD-FHEM/RFFHEM/issues/607#issuecomment-830818445
+    // Freq: 868.300 MHz, Bandbreite: 203kHz (Messung), DataRate: 8207.32 Baud
+    ConfigFSK_t cfg;
+    cfg.frequency          = BRESSER_FREQ_MHZ; // 868.3 MHz
+    cfg.bitRate             = 8.21f;             // kBaud
+    cfg.frequencyDeviation  = 57.136417f;        // kHz
+    cfg.power               = 10;                // dBm (RX-only, irrelevant)
+    cfg.preambleLength      = 32;                // Bit
+    cfg.receiverBandwidth   = 270.0f;             // kHz
 
-    if (!found) {
-        Serial.println("[Bresser] CC1101 nicht gefunden! Pins prüfen:");
-        Serial.printf("  SCK=%d MISO=%d MOSI=%d CS=%d GDO0=%d\n",
-                      BRESSER_SCK_PIN, BRESSER_MISO_PIN,
-                      BRESSER_MOSI_PIN, BRESSER_CS_PIN, BRESSER_GDO0_PIN);
-        // MISO-Pegel direkt messen als Diagnose
-        Serial.printf("  MISO direkt: %d (soll beim Reset 0 werden)\n",
-                      digitalRead(BRESSER_MISO_PIN));
+    int16_t state = s_radio.begin(cfg);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[Bresser] CC1101 Init fehlgeschlagen (Code %d) - SPI/Verkabelung prüfen\n", state);
         return;
     }
 
-    cc1101Configure868();
+    // Fixed-Length-Paketmodus statt CC1101-Rohbitstream + Software-Präambelsuche:
+    // Der CC1101 macht die Bit-/Byte-Synchronisation und Präambel-/Sync-Erkennung
+    // jetzt komplett selbst und legt fertige Bytes ins FIFO.
+    s_radio.fixedPacketLengthMode(MSG_BUF_SIZE);
 
-    s_timer = timerBegin(1, 80, true);
-    timerAttachInterrupt(s_timer, &bresserTimerISR, true);
-    timerAlarmWrite(s_timer, 124, true);
-    timerAlarmEnable(s_timer);
+    // Bresser nutzt eine eigene LFSR-Prüfsumme statt der CC1101-Hardware-CRC
+    // (CRC-16/CCITT) – deren Filter würde sonst jedes Paket verwerfen.
+    s_radio.setCrcFiltering(false);
+
+    // Eigentliches Sync-Wort ist 0x2D 0xD4, das letzte Präambel-Byte ist 0xAA.
+    // Der CC1101 erlaubt aber keine 40-Bit-Präambel, deshalb: 32-Bit-Präambel
+    // (s.o.) + Sync auf "AA 2D" (letztes Präambel-Byte + erstes echtes
+    // Sync-Byte). Das zweite echte Sync-Byte (0xD4) taucht dadurch als erstes
+    // Byte im empfangenen Paket auf – wird unten verifiziert und übersprungen.
+    s_radio.setSyncWord(0xAA, 0x2D, 0, false);
+
+    s_radio.setPacketReceivedAction(bresserPacketISR);
+
+    state = s_radio.startReceive();
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[Bresser] startReceive() fehlgeschlagen (Code %d)\n", state);
+        return;
+    }
 
     s_ready = true;
-    Serial.println("[Bresser] Bereit");
+    Serial.printf("[Bresser] CC1101 bereit @ %.3f MHz FSK (RadioLib)\n", BRESSER_FREQ_MHZ);
 }
 
 void bresserLoop() {
-    if (!s_ready || !s_newBit) return;
-    uint8_t bit = s_curBit;
-    s_newBit = false;
+    if (!s_ready || !s_receivedFlag) return;
+    s_receivedFlag = false;
 
-    pushBit(bit);
+    uint8_t recvData[MSG_BUF_SIZE];
+    int16_t state = s_radio.readData(recvData, MSG_BUF_SIZE);
+    s_radio.startReceive();  // sofort wieder in RX, unabhängig vom Ergebnis
 
-    uint8_t msg[MSG_BYTES];
-    if (!findAndExtract(msg)) return;
+    if (state != RADIOLIB_ERR_NONE) return;
+
+    // Siehe setSyncWord()-Kommentar in bresserInit(): das erste Byte im FIFO
+    // ist das zweite echte Sync-Byte (0xD4) und keine Nutzdaten.
+    if (recvData[0] != 0xD4) return;
+
+    const uint8_t* msg = &recvData[1];  // 25 Bytes Nutzdaten
 
     static uint8_t  lastMsg[MSG_BYTES] = {};
     static uint32_t lastTime = 0;
-    if (memcmp(msg, lastMsg, MSG_BYTES) == 0 && (millis() - lastTime) < 60000) return;
-    memcpy(lastMsg, msg, MSG_BYTES);
-    lastTime = millis();
+    uint32_t now = millis();
+    if (memcmp(msg, lastMsg, MSG_BYTES) == 0 && (now - lastTime) < BRESSER_RX_DEBOUNCE_MS) return;
 
     char json[384];
     if (!bresserDecode(msg, json, sizeof(json))) return;
+
+    memcpy(lastMsg, msg, MSG_BYTES);
+    lastTime = now;
 
     Serial.printf("[Bresser] → %s\n", json);
     if (s_client && s_client->connected()) {
         s_client->publish(BRESSER_MQTT_TOPIC, json, false);
     }
-
-    s_bitPos = 0;
-    memset(s_bitBuf, 0, sizeof(s_bitBuf));
 }
