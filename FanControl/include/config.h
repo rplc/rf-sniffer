@@ -5,9 +5,9 @@
 #define MQTT_TOPIC_SZ        "fan/sz"
 
 // ─── Remote-IDs ──────────────────────────────────────────────────────────────
-#define REMOTE_ID_WZ_TISCH  { 0xC9, 0x22 }   // Remote A – WZ Tisch
-#define REMOTE_ID_WZ_COUCH  { 0x17, 0x1D }   // Remote B – WZ Couch
-#define REMOTE_ID_SZ        { 0x9A, 0xA7 }   // Remote C – Schlafzimmer
+#define REMOTE_ID_WZ_TISCH  { 0xC9, 0x22 }   // Remote A - WZ Tisch
+#define REMOTE_ID_WZ_COUCH  { 0x17, 0x1D }   // Remote B - WZ Couch
+#define REMOTE_ID_SZ        { 0x9A, 0xA7 }   // Remote C - Schlafzimmer
 
 // ─── CC1101 Pins (ESP32) ─────────────────────────────────────────────────────
 #define CC1101_SCK_PIN   18

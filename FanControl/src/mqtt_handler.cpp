@@ -65,7 +65,7 @@ static void reconnect() {
 
         if (ok) {
             Serial.println(" verbunden");
-            // Retained-Filter VOR dem Subscribe setzen –
+            // Retained-Filter vor dem Subscribe setzen -
             // retained Messages werden beim ersten client.loop() nach Subscribe
             // zugestellt, s_ignoreUntil muss also bereits aktiv sein
             s_ignoreUntil = millis() + 1500;

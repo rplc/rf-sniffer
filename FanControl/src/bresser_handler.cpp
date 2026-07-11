@@ -80,7 +80,7 @@ static bool cc1101Reset() {
     uint32_t t = micros();
     while (digitalRead(BRESSER_MISO_PIN)) {
         if (micros() - t > 5000) {
-            Serial.println("[Bresser] MISO timeout beim Reset – MISO bleibt HIGH");
+            Serial.println("[Bresser] MISO timeout beim Reset - MISO bleibt HIGH");
             Serial.printf("  MISO Pin %d = %d\n", BRESSER_MISO_PIN, digitalRead(BRESSER_MISO_PIN));
             digitalWrite(BRESSER_CS_PIN, HIGH);
             return false;
@@ -106,7 +106,7 @@ static bool cc1101Reset() {
     Serial.printf("[Bresser] IOCFG2=0x%02X IOCFG0=0x%02X (Default: 0x29, 0x3F)\n",
                   iocfg2, iocfg0);
 
-    // VERSION 0x14 = standard CC1101, 0x04 = 868MHz Chip-Revision – beide gültig
+    // VERSION 0x14 = standard CC1101, 0x04 = 868MHz Chip-Revision - beide gültig
     return (ver == 0x14 || ver == 0x04);
 }
 
@@ -304,7 +304,7 @@ void bresserInit(PubSubClient& client) {
     delay(10);
 
     s_hspi.begin(BRESSER_SCK_PIN, BRESSER_MISO_PIN, BRESSER_MOSI_PIN, BRESSER_CS_PIN);
-    s_hspi.setFrequency(1000000);  // 1MHz – stabil auf allen Breakout-Boards
+    s_hspi.setFrequency(1000000);  // 1MHz - stabil auf allen Breakout-Boards
     s_hspi.setDataMode(SPI_MODE0);
     s_hspi.setBitOrder(MSBFIRST);
     delay(10);

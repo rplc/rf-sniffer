@@ -146,18 +146,18 @@ void rfEnterTx() {
         detachInterrupt(CC1101_GDO0_PIN);
         s_rxActive = false;
     }
-    s_radio.standby();               // SIDLE
-    delay(2);                         // Settling-Zeit
-    s_radio.transmitDirectAsync();    // IOCFG0/PKTCTRL0 = async OOK, STX-Strobe
+    s_radio.SPIsendCommand(RADIOLIB_CC1101_CMD_IDLE); // SIDLE
+    delay(2);                                          // Settling-Zeit
+    s_radio.SPIsendCommand(RADIOLIB_CC1101_CMD_TX);    // STX
     pinMode(CC1101_GDO0_PIN, OUTPUT);
     digitalWrite(CC1101_GDO0_PIN, LOW);
     delayMicroseconds(500);
 }
 
 void rfEnterRx() {
-    s_radio.standby();               // SIDLE
-    delay(2);                         // Settling-Zeit
-    s_radio.receiveDirectAsync();     // IOCFG0/PKTCTRL0 = async OOK, SRX-Strobe
+    s_radio.SPIsendCommand(RADIOLIB_CC1101_CMD_IDLE); // SIDLE
+    delay(2);                                          // Settling-Zeit
+    s_radio.SPIsendCommand(RADIOLIB_CC1101_CMD_RX);    // SRX
     delay(2);
     pinMode(CC1101_GDO0_PIN, INPUT);
 
@@ -236,45 +236,50 @@ bool rfInit(FanRxCallback fanCb, LampRxCallback lampCb) {
 
     int16_t state = s_radio.begin(RF_FREQ_MHZ);
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[RF] CC1101 nicht gefunden – SPI prüfen (Code %d)\n", state);
+        Serial.printf("[RF] CC1101 nicht gefunden - SPI prüfen (Code %d)\n", state);
         return false;
     }
 
-    s_radio.setOOK(true);                // MDMCFG2: ASK/OOK-Modulation
-    s_radio.disableSyncWordFiltering();   // MDMCFG2: kein Sync-Wort (== altes 0x30)
-
-    // ACHTUNG: RadioLib akzeptiert für CC1101 nur diskrete dBm-Werte
-    // { -30,-20,-15,-10,0,5,7,10 }. Ein Aufruf mit 12 (wie ursprünglich hier)
-    // schlägt intern fehl (RADIOLIB_ERR_INVALID_OUTPUT_POWER) und wird still
-    // verworfen! 10 dBm ist ohnehin der Maximalwert und ergibt für 433MHz
-    // denselben PATABLE-Rohwert (0xC0), den auch das alte setPA(12) erzeugt hat.
-    int16_t paState = s_radio.setOutputPower(10);
-    if (paState != RADIOLIB_ERR_NONE) {
-        Serial.printf("[RF] Warnung: setOutputPower fehlgeschlagen (Code %d)\n", paState);
-    }
-
-    // TI CC1101 Errata: bei Datenraten < 250 kBaud (unser Fall) MÜSSEN
-    // TEST2/TEST1 von den POR-Defaults (0x88/0x31) abweichend gesetzt werden,
-    // sonst bleibt der Empfänger praktisch taub. RadioLib's begin()/config()
-    // setzt diese Register nicht automatisch, SmartRC_CC1101 hatte sie fest
-    // einprogrammiert. FREND1/AGCCTRL0 sind die dort ebenfalls bewährten Werte
-    // für den RX-Signalpfad (LNA/Mixer-Bias bzw. AGC-Zielamplitude).
-    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_TEST2,    0x81);
-    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_TEST1,    0x35);
+    // These SPI register settings come from SmartRC-CC1101-Driver-Lib and are known to work.
+    // With the stock RadioLib settings the RSSI is just awful. Therefore we copy the SPI regsiter settings
+    // and avoid "normal" radioLib methods (see rfEnterRX/TX methods) to avoid any SPI registers to get
+    // overridden.
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FSCTRL1,  0x06);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_MDMCFG4,  0x87);  // CHANBW≈203kHz, DRATE_E=7
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_MDMCFG3,  0x93);  // DRATE_M (≈5kBaud zusammen mit obigem)
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_MDMCFG2,  0x30);  // ASK/OOK, kein Sync-Wort
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_MDMCFG1,  0x02);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_MDMCFG0,  0xF8);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_CHANNR,   0x00);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_DEVIATN,  0x47);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FREND1,   0x56);  // RX-Frontend (LNA/Mixer-Bias)
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FREND0,   0x11);  // TX: PA_TABLE-Index für OOK "1"-Bit
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_MCSM0,    0x18);  // Auto-Kalibrierung IDLE→RX/TX
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FOCCFG,   0x16);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_BSCFG,    0x1C);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_AGCCTRL2, 0xC7);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_AGCCTRL1, 0x00);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_AGCCTRL0, 0xB2);  // AGC-Zielamplitude
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FSCAL3,   0xE9);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FSCAL2,   0x2A);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FSCAL1,   0x00);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FSCAL0,   0x1F);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FSTEST,   0x59);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_TEST2,    0x81);  // Errata: Pflicht bei <250kBaud
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_TEST1,    0x35);  // Errata: Pflicht bei <250kBaud
     s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_TEST0,    0x09);
-    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FREND1,   0x56);
-    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_AGCCTRL0, 0xB2);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_PKTCTRL1, 0x04);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_PKTCTRL0, 0x32);  // Async serial, infinite length
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_ADDR,     0x00);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_PKTLEN,   0x00);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_IOCFG2,   0x0D);  // GDO2: async serial
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_IOCFG0,   0x0D);  // GDO0: async serial (RX-Daten / TX-Dateneingang)
 
-    // Kanalfilter-Bandbreite + Datenrate 1:1 wie im alten SmartRC-Setup
-    // (MDMCFG4=0x87 → CHANBW≈203kHz/DRATE_E=7, MDMCFG3=0x93 → DRATE_M=0x93,
-    // zusammen ≈5kBaud). RadioLibs begin()-Defaults (58kHz/4.8kBaud) waren
-    // für unsere kurzen OOK-Pulse (200µs–20ms) zu schmalbandig – das war der
-    // Haupt-Reichweitenverlust bei RX *und* TX (PLL-Kalibrierung/AGC-Timing
-    // hängen mit an diesen Registern). setRxBandwidth()/setBitRate() vorher
-    // wieder entfernen, falls testweise gesetzt – diese beiden Register-Writes
-    // hier sind die exakten alten Werte und sollen nicht überschrieben werden.
-    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_MDMCFG4, 0x87);
-    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_MDMCFG3, 0x93);
+    // PA_TABLE für OOK: Index0 = Pegel bei Bit "0" (aus), Index1 = Pegel bei
+    // Bit "1" (volle Leistung). 0xC0 ist exakt derselbe Rohwert, den das alte
+    // setPA(12) für 433MHz erzeugt hat (RadioLib-Tabelle: 10dBm@434MHz = 0xC0).
+    const uint8_t paTable[2] = {0x00, 0xC0};
+    s_radio.SPIwriteRegisterBurst(RADIOLIB_CC1101_REG_PATABLE, paTable, 2);
 
     Serial.printf("[RF] CC1101 OK @ %.2f MHz | Ver=0x%02X\n",
                   RF_FREQ_MHZ, s_radio.getChipVersion());
