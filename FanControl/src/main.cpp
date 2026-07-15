@@ -36,7 +36,12 @@ void setup() {
     wifiConnect();
 
     mqttInit(mqttClient);
-    bresserInit(mqttClient);
+    // Auf dem 868.3MHz Band ist bei mir ein massiver Störer, weswegen mit der Kombination
+    // aus Antenne & Modul nichts empfangen werden kann. Der SDR von rtl_433 ist da deutlich
+    // empfindlicher und besser im Empfang als das selbst gebastelte Zeug hier -> bei rtl_433
+    // bleiben. Alternativen: RF Chips vom Typ RFM95 oder SX1276 mit deutlich besserer/größerer
+    // Antenne als die 868 Helix Antenne, inkl. Groundplane.
+    // bresserInit(mqttClient);
     ota.init();
 }
 
@@ -50,6 +55,6 @@ void loop() {
     rfLoop();               // Fan+Lamp RX dekodieren → Callbacks
     fanLoop();              // Dimmer-Tick
     lampLoop();             // (Erweiterungspunkt)
-    bresserLoop();          // Bresser 868MHz RX
+    // bresserLoop();          // Bresser 868MHz RX
     ota.handle();
 }
