@@ -3,6 +3,7 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <ArduinoJson.h>
+#include <algorithm>
 
 // ─── CC1101 (RadioLib) ───────────────────────────────────────────────────────
 // Eigener SPI-Bus (HSPI), 433MHz-CC1101 (rf_handler) läuft auf VSPI.
@@ -22,12 +23,70 @@ static bool          s_ready  = false;
 static constexpr uint8_t MSG_BUF_SIZE = 27;
 static constexpr int     MSG_BYTES    = 25;
 
+// -----------------------------------------------------------------------------
+// Frequency Scan
+// -----------------------------------------------------------------------------
+
+static constexpr float kFreqList[] = {
+    868.220f, 868.225f, 868.230f, 868.235f,
+    868.240f, 868.245f, 868.250f, 868.255f,
+    868.260f, 868.265f, 868.270f, 868.275f,
+    868.280f, 868.285f, 868.290f, 868.295f,
+    868.300f, 868.305f, 868.310f, 868.315f,
+    868.320f, 868.325f, 868.330f, 868.335f,
+    868.340f, 868.345f, 868.350f, 868.355f,
+    868.360f
+};
+
+static constexpr uint8_t kFreqCount =
+    sizeof(kFreqList) / sizeof(kFreqList[0]);
+
+static constexpr uint32_t SCAN_TIME_MS = 605000;
+
+static uint8_t currentFreq = 0;
+static uint32_t scanStart = 0;
+
+// Statistik
+static uint32_t irqCount = 0;
+static uint32_t readOk = 0;
+static uint32_t readError = 0;
+static uint32_t digestOk = 0;
+static uint32_t digestFail = 0;
+
+static float rssiSum = 0;
+static float rssiMin = 999;
+static float rssiMax = -999;
+
+// Für Median
+static float rssiValues[256];
+static uint16_t rssiCount = 0;
+
+static float lqiSum = 0;
+static uint8_t lqiMin = 255;
+static uint8_t lqiMax = 0;
+static uint8_t lqiValues[256];
+static uint16_t lqiCount = 0;
+
 // ─── ISR: Paket vollständig empfangen ────────────────────────────────────────
 
 static volatile bool s_receivedFlag = false;
 
 void IRAM_ATTR bresserPacketISR() {
     s_receivedFlag = true;
+}
+
+// RadioLib's CC1101::getRSSI() liefert im Paket-Modus NUR den gecachten
+// RSSI-Wert des letzten erfolgreich gelesenen Pakets (intern "rawRSSI",
+// initialisiert mit 0 → ergibt exakt -74.0 dBm). Das ist also KEIN Live-Wert
+// des Rauschgrunds, sondern bleibt eingefroren, bis wieder ein Paket komplett
+// empfangen wurde. Für einen echten Live-Wert (auch ohne Paket, z.B. für den
+// periodischen Idle-Log) lesen wir das RSSI-Statusregister direkt – das wird
+// vom CC1101 während RX kontinuierlich aktualisiert, unabhängig von
+// Paketempfang. Braucht -DRADIOLIB_LOW_LEVEL=1 (bereits in platformio.ini).
+static float bresserLiveRSSI() {
+    uint8_t raw = s_radio.SPIreadRegister(RADIOLIB_CC1101_REG_RSSI);
+    if (raw >= 128) return (((float)raw - 256.0f) / 2.0f) - 74.0f;
+    return ((float)raw / 2.0f) - 74.0f;
 }
 
 // ─── Bresser 7-in-1 Decoder (unverändert – Vorlage: rtl_433 bresser_7in1.c) ──
@@ -126,6 +185,94 @@ static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) 
     return true;
 }
 
+static void resetDebugStats()
+{
+    irqCount = 0;
+    readOk = 0;
+    readError = 0;
+    digestOk = 0;
+    digestFail = 0;
+
+    rssiSum = 0;
+    rssiMin = 999;
+    rssiMax = -999;
+    rssiCount = 0;
+
+    lqiSum = 0;
+    lqiMin = 255;
+    lqiMax = 0;
+    lqiCount = 0;
+
+    scanStart = millis();
+}
+
+static float calcMedianRSSI()
+{
+    if(rssiCount == 0)
+        return 0;
+
+    float tmp[256];
+
+    memcpy(tmp, rssiValues, sizeof(float) * rssiCount);
+
+    std::sort(tmp, tmp + rssiCount);
+
+    if(rssiCount & 1)
+        return tmp[rssiCount / 2];
+
+    return (tmp[rssiCount/2-1] + tmp[rssiCount/2]) / 2.0f;
+}
+
+static float calcMedianLQI()
+{
+    if (lqiCount == 0)
+        return 0;
+
+    uint8_t tmp[256];
+    memcpy(tmp, lqiValues, sizeof(uint8_t) * lqiCount);
+    std::sort(tmp, tmp + lqiCount);
+
+    if (lqiCount & 1)
+        return tmp[lqiCount / 2];
+
+    return (tmp[lqiCount/2-1] + tmp[lqiCount/2]) / 2.0f;
+}
+
+static void publishDebugStats()
+{
+    StaticJsonDocument<512> doc;
+
+    doc["freq"] = kFreqList[currentFreq];
+    doc["runtime_s"] = (millis() - scanStart) / 1000;
+
+    doc["irq"] = irqCount;
+    doc["read_ok"] = readOk;
+    doc["read_error"] = readError;
+    doc["digest_ok"] = digestOk;
+    doc["digest_fail"] = digestFail;
+
+    if(readOk)
+    {
+        doc["avg_rssi"] = rssiSum / readOk;
+        doc["median_rssi"] = calcMedianRSSI();
+        doc["min_rssi"] = rssiMin;
+        doc["max_rssi"] = rssiMax;
+
+        doc["avg_lqi"] = lqiSum / readOk;
+        doc["median_lqi"] = calcMedianLQI();
+        doc["min_lqi"] = lqiMin;
+        doc["max_lqi"] = lqiMax;
+    }
+
+    char json[512];
+    serializeJson(doc, json);
+
+    Serial.println(json);
+
+    if(s_client && s_client->connected())
+        s_client->publish("weather/bresserDebug", json, false);
+}
+
 // ─── Öffentliche API ─────────────────────────────────────────────────────────
 
 void bresserInit(PubSubClient& client) {
@@ -139,18 +286,45 @@ void bresserInit(PubSubClient& client) {
     // https://github.com/RFD-FHEM/RFFHEM/issues/607#issuecomment-830818445
     // Freq: 868.300 MHz, Bandbreite: 203kHz (Messung), DataRate: 8207.32 Baud
     ConfigFSK_t cfg;
-    cfg.frequency          = BRESSER_FREQ_MHZ; // 868.3 MHz
+    cfg.frequency          = BRESSER_FREQ_MHZ + (BRESSER_FREQ_OFFSET_KHZ / 1000.0); // MHz
     cfg.bitRate             = 8.21f;             // kBaud
     cfg.frequencyDeviation  = 57.136417f;        // kHz
     cfg.power               = 10;                // dBm (RX-only, irrelevant)
     cfg.preambleLength      = 32;                // Bit
-    cfg.receiverBandwidth   = 270.0f;             // kHz
+    cfg.receiverBandwidth   = 270.0f;             // kHz — empirisch bester RSSI-Wert (siehe unten)
 
+    //cfg.frequency = kFreqList[currentFreq]; // TODO add offset to frequency sweep
     int16_t state = s_radio.begin(cfg);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("[Bresser] CC1101 Init fehlgeschlagen (Code %d) - SPI/Verkabelung prüfen\n", state);
         return;
     }
+
+    // TI CC1101 Errata (Abschnitt 5.3): bei Datenraten < 250 kBaud müssen
+    // TEST2/TEST1/TEST0 von den POR-Defaults (0x88/0x31/0x09) abweichend
+    // gesetzt werden. FREND1 ist ein bekannter TI-Tuning-Wert für das
+    // // RX-Frontend (LNA/Mixer-Bias).
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_AGCCTRL2, 0xC7);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_AGCCTRL1, 0x00);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_AGCCTRL0, 0xB2);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FOCCFG,   0x16);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_BSCFG,    0x1C);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FREND1,   0x56);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_TEST2,    0x81);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_TEST1,    0x35);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_TEST0,    0x09);
+    s_radio.SPIwriteRegister(RADIOLIB_CC1101_REG_FSCTRL1,  0x06);
+
+    // WICHTIG: Der TEST2/TEST1/TEST0/FREND1-Errata-Fix, der beim 433MHz-CC1101
+    // (Board mit "v2.0"-Aufdruck) den entscheidenden Unterschied gemacht hat,
+    // wurde hier testweise ebenfalls angewendet – und hat den RSSI empirisch
+    // messbar VERSCHLECHTERT (203kHz Bandbreite: -77dBm ohne Fix vs. -92 bis
+    // -104dBm mit Fix). Das 868MHz-Board hat keinen Revisions-Aufdruck (anders
+    // als das 433er-Board) und ist vermutlich eine andere CC1101-Silizium-
+    // Revision – TI hat die "optimalen" Register-Werte zwischen Revisionen
+    // tatsächlich geändert, ein Preset ist also nicht zwangsläufig zwischen
+    // Chargen/Revisionen übertragbar. Deshalb hier bewusst NICHT gesetzt und
+    // stattdessen auf RadioLibs eigene begin()-Kalibrierung verlassen.
 
     // Fixed-Length-Paketmodus statt CC1101-Rohbitstream + Software-Präambelsuche:
     // Der CC1101 macht die Bit-/Byte-Synchronisation und Präambel-/Sync-Erkennung
@@ -166,7 +340,12 @@ void bresserInit(PubSubClient& client) {
     // (s.o.) + Sync auf "AA 2D" (letztes Präambel-Byte + erstes echtes
     // Sync-Byte). Das zweite echte Sync-Byte (0xD4) taucht dadurch als erstes
     // Byte im empfangenen Paket auf – wird unten verifiziert und übersprungen.
-    s_radio.setSyncWord(0xAA, 0x2D, 0, false);
+    // Sync-Wort-Erkennung mit 1 Bit Fehlertoleranz statt bit-exaktem Match
+    // (maxErrBits=0 → 0). Bei schwachem/wechselhaftem Signal (siehe RSSI-Log)
+    // erhöht das die Trefferquote spürbar, auf Kosten einer minimal höheren
+    // Falscherkennungsrate (die wird ohnehin über den Digest in bresserDecode()
+    // abgefangen).
+    s_radio.setSyncWord(0xAA, 0x2D, 2, false);
 
     s_radio.setPacketReceivedAction(bresserPacketISR);
 
@@ -175,37 +354,115 @@ void bresserInit(PubSubClient& client) {
         Serial.printf("[Bresser] startReceive() fehlgeschlagen (Code %d)\n", state);
         return;
     }
+    resetDebugStats();
 
     s_ready = true;
-    Serial.printf("[Bresser] CC1101 bereit @ %.3f MHz FSK (RadioLib)\n", BRESSER_FREQ_MHZ);
+    Serial.printf("[Bresser] CC1101 bereit @ %.3f MHz FSK (RadioLib) | Ver=0x%02X\n", BRESSER_FREQ_MHZ, s_radio.getChipVersion());
+
+    Serial.printf("PartNum=0x%02X, Version=0x%02X, FSCAL3=0x%02X, FSCAL2=0x%02X, FSCAL1=0x%02X, FSCAL0=0x%02X, FREQ2=0x%02X, FREQ1=0x%02X, FREQ0=0x%02X\n",
+        s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_PARTNUM), s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_VERSION), s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_FSCAL3),
+        s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_FSCAL2), s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_FSCAL1), s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_FSCAL0),
+        s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_FREQ2), s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_FREQ1), s_radio.SPIgetRegValue(RADIOLIB_CC1101_REG_FREQ0));
 }
 
 void bresserLoop() {
+    // Periodische RSSI-Ausgabe (auch ohne Paket) – echter Live-Wert direkt aus
+    // dem Statusregister (s. bresserLiveRSSI()), NICHT der paket-gecachte
+    // s_radio.getRSSI()-Wert, der ohne Paketempfang bei 0/-74.0dBm einfriert.
+    static uint32_t lastRssiLog = 0;
+    uint32_t nowMs = millis();
+    if (s_ready && (nowMs - lastRssiLog) > 5000) {
+        lastRssiLog = nowMs;
+        Serial.printf("[Bresser] RSSI (live): %.1f dBm\n", bresserLiveRSSI());
+    }
+
+    if(s_ready && millis() - scanStart >= SCAN_TIME_MS)
+    {
+        publishDebugStats();
+
+        currentFreq++;
+
+        if(currentFreq >= kFreqCount)
+            currentFreq = 0;
+
+        s_radio.standby();
+
+        int16_t state = s_radio.setFrequency(kFreqList[currentFreq]);
+
+        if(state != RADIOLIB_ERR_NONE)
+            Serial.printf("setFrequency Fehler %d\n", state);
+
+        s_radio.startReceive();
+
+        resetDebugStats();
+
+        Serial.printf("\n==============================\n");
+        Serial.printf("Neue Frequenz %.3f MHz\n", kFreqList[currentFreq]);
+        Serial.printf("==============================\n");
+    }
+
     if (!s_ready || !s_receivedFlag) return;
     s_receivedFlag = false;
+    irqCount++;
+
+    Serial.println("[Bresser] IRQ (GDO0) ausgelöst – lese FIFO...");
 
     uint8_t recvData[MSG_BUF_SIZE];
     int16_t state = s_radio.readData(recvData, MSG_BUF_SIZE);
+
+    // Live-Werte statt paket-gecachtem getRSSI(): funktioniert unabhängig
+    // davon, ob readData() gleich erfolgreich ist oder nicht, und ist nicht
+    // von einem eventuell veralteten Cache-Wert aus einem früheren Paket
+    // verfälscht.
+    float   rssi = bresserLiveRSSI();
+    uint8_t lqi  = s_radio.getLQI();
+
+    rssiSum += rssi;
+    if(rssi < rssiMin) rssiMin = rssi;
+    if(rssi > rssiMax) rssiMax = rssi;
+    if(rssiCount < 256) rssiValues[rssiCount++] = rssi;
+
+    lqiSum += lqi;
+    if(lqi < lqiMin) lqiMin = lqi;
+    if(lqi > lqiMax) lqiMax = lqi;
+    if(lqiCount < 256) lqiValues[lqiCount++] = lqi;
+
     s_radio.startReceive();  // sofort wieder in RX, unabhängig vom Ergebnis
 
-    if (state != RADIOLIB_ERR_NONE) return;
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[Bresser] readData() Fehler: %d | RSSI: %.1f dBm | LQI: %d\n", state, rssi, lqi);
+        readError++;
+        return;
+    }
+    readOk++;
+
+    Serial.printf("[Bresser] RX %d Bytes | RSSI: %.1f dBm | LQI: %d | Byte[0]=0x%02X | Rohdaten: ",
+                  MSG_BUF_SIZE, rssi, lqi, recvData[0]);
+    for (uint8_t i = 0; i < MSG_BUF_SIZE; i++) Serial.printf("%02X ", recvData[i]);
+    Serial.println();
 
     // Siehe setSyncWord()-Kommentar in bresserInit(): das erste Byte im FIFO
     // ist das zweite echte Sync-Byte (0xD4) und keine Nutzdaten.
-    if (recvData[0] != 0xD4) return;
+    if (recvData[0] != 0xD4) {
+        Serial.println("[Bresser] Byte[0] != 0xD4 – verworfen");
+        return;
+    }
 
     const uint8_t* msg = &recvData[1];  // 25 Bytes Nutzdaten
 
     static uint8_t  lastMsg[MSG_BYTES] = {};
     static uint32_t lastTime = 0;
-    uint32_t now = millis();
-    if (memcmp(msg, lastMsg, MSG_BYTES) == 0 && (now - lastTime) < BRESSER_RX_DEBOUNCE_MS) return;
+    if (memcmp(msg, lastMsg, MSG_BYTES) == 0 && (nowMs - lastTime) < BRESSER_RX_DEBOUNCE_MS) return;
 
     char json[384];
-    if (!bresserDecode(msg, json, sizeof(json))) return;
+    if (!bresserDecode(msg, json, sizeof(json))) {
+        digestFail++;
+        return;
+    }
+    digestOk++;
 
     memcpy(lastMsg, msg, MSG_BYTES);
-    lastTime = now;
+    lastTime = nowMs;
 
     Serial.printf("[Bresser] → %s\n", json);
     if (s_client && s_client->connected()) {
