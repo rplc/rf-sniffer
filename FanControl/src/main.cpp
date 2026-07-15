@@ -14,8 +14,12 @@ PubSubClient mqttClient(wifiClient);
 OTASetup ota;
 
 static void wifiConnect() {
-    Serial.printf("\n[WiFi] Verbinde mit %s", WIFI_SSID);
+    Serial.printf("\n[WiFi] Verbinde mit %s\n", WIFI_SSID);
     WiFi.mode(WIFI_STA);
+
+    Serial.print("MAC: ");
+    Serial.println(WiFi.macAddress());
+
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
