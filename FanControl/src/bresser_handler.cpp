@@ -105,7 +105,7 @@ static uint16_t lfsr_digest16(const uint8_t* data, int len,
     return sum;
 }
 
-static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) {
+static bool bresserDecode(const uint8_t* rawMsg, float rssi, char* jsonOut, size_t jsonLen) {
     uint8_t msg[MSG_BYTES];
     memcpy(msg, rawMsg, MSG_BYTES);
 
@@ -129,6 +129,7 @@ static bool bresserDecode(const uint8_t* rawMsg, char* jsonOut, size_t jsonLen) 
     doc["id"]         = id;
     doc["battery_ok"] = !bat_low;
     doc["startup"]    = !nstartup;
+    doc["rssi"]       = serialized(String(rssi, 1));
 
     if (s_type == 1 || s_type == 12 || s_type == 13) {
         int wdir     = (msg[4] >> 4) * 100 + (msg[4] & 0x0F) * 10 + (msg[5] >> 4);
@@ -291,7 +292,7 @@ void bresserInit(PubSubClient& client) {
     cfg.frequencyDeviation  = 57.136417f;        // kHz
     cfg.power               = 10;                // dBm (RX-only, irrelevant)
     cfg.preambleLength      = 32;                // Bit
-    cfg.receiverBandwidth   = 270.0f;             // kHz — empirisch bester RSSI-Wert (siehe unten)
+    cfg.receiverBandwidth   = 203.0f;             // kHz — empirisch bester RSSI-Wert (siehe unten)
 
     //cfg.frequency = kFreqList[currentFreq]; // TODO add offset to frequency sweep
     int16_t state = s_radio.begin(cfg);
@@ -455,7 +456,7 @@ void bresserLoop() {
     if (memcmp(msg, lastMsg, MSG_BYTES) == 0 && (nowMs - lastTime) < BRESSER_RX_DEBOUNCE_MS) return;
 
     char json[384];
-    if (!bresserDecode(msg, json, sizeof(json))) {
+    if (!bresserDecode(msg, rssi, json, sizeof(json))) {
         digestFail++;
         return;
     }

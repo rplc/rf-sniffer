@@ -15,6 +15,16 @@ static FanRxCallback  s_fanCb  = nullptr;
 static LampRxCallback s_lampCb = nullptr;
 static bool           s_rxActive = false;
 
+// Siehe Kommentar in rf_handler.h: dieser CC1101 läuft im rohen Async-
+// Pulsmodus, RadioLibs eigener getRSSI() (Paket-Cache) wird hier NIE
+// aktualisiert. Live-Register-Read stattdessen, identisch zur Methode im
+// Bresser-Handler.
+float rfGetRSSI() {
+    uint8_t raw = s_radio.SPIreadRegister(RADIOLIB_CC1101_REG_RSSI);
+    if (raw >= 128) return (((float)raw - 256.0f) / 2.0f) - 74.0f;
+    return ((float)raw / 2.0f) - 74.0f;
+}
+
 // ─── ISR-Buffer (Double-Buffer) ──────────────────────────────────────────────
 
 static constexpr uint8_t MAX_PULSES = 80;

@@ -79,10 +79,11 @@ void lampOnRfFrame(uint32_t code) {
     for (uint8_t i = 0; i < LAMP_CODE_COUNT; i++) {
         if (LAMP_CODES[i].code != code) continue;
 
-        char payload[80];
-        StaticJsonDocument<80> doc;
-        doc["cmd"] = LAMP_CODES[i].cmd;
-        doc["ts"]  = millis();
+        char payload[112];
+        StaticJsonDocument<112> doc;
+        doc["cmd"]  = LAMP_CODES[i].cmd;
+        doc["ts"]   = millis();
+        doc["rssi"] = serialized(String(rfGetRSSI(), 1));
         serializeJson(doc, payload, sizeof(payload));
 
         Serial.printf("[LAMP] RX → MQTT: %s : %s\n", LAMP_CODES[i].topic, payload);

@@ -16,5 +16,13 @@ void rfEnterRx();   // CC1101 in RX schalten, ISR aktivieren
 // Im loop() aufrufen
 void rfLoop();
 
+// Live-RSSI (dBm) zum Zeitpunkt des Aufrufs. Wichtig: der 433MHz-CC1101 läuft
+// im rohen Async-Pulsmodus (kein RadioLib-Paketmodus, kein readData()), daher
+// ist RadioLibs eigener getRSSI()-Cache hier NIE gültig (bleibt permanent auf
+// dem Initialwert stehen). Diese Funktion liest das RSSI-Statusregister immer
+// live und direkt – von fan_handler/lamp_handler direkt nach dem Decodieren
+// eines Frames aufzurufen, um den RSSI mit ins MQTT-JSON zu packen.
+float rfGetRSSI();
+
 // ISR (public für IRAM_ATTR)
 void IRAM_ATTR rfPulseISR();

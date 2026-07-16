@@ -53,8 +53,8 @@ static void fanSend(const uint8_t id[2], uint8_t cmd) {
 
 // ─── CMD-Byte → MQTT-Payload ──────────────────────────────────────────────────
 
-static bool cmdToPayload(uint8_t cmd, char* buf, size_t bufLen) {
-    StaticJsonDocument<96> doc;
+static bool cmdToPayload(uint8_t cmd, float rssi, char* buf, size_t bufLen) {
+    StaticJsonDocument<128> doc;
     switch (cmd) {
         case FAN_CMD_ALL_OFF:    doc["cmd"] = "all_off";                break;
         case FAN_CMD_FAN_OFF:    doc["cmd"] = "fan_off";                break;
@@ -76,7 +76,8 @@ static bool cmdToPayload(uint8_t cmd, char* buf, size_t bufLen) {
             Serial.printf("[FAN] Unbekannter CMD: 0x%02X\n", cmd);
             return false;
     }
-    doc["ts"] = millis();
+    doc["ts"]   = millis();
+    doc["rssi"] = serialized(String(rssi, 1));
     serializeJson(doc, buf, bufLen);
     return true;
 }
@@ -97,8 +98,8 @@ void fanOnRfFrame(const uint8_t remoteId[2], uint8_t cmd) {
         return;
     }
 
-    char payload[96];
-    if (!cmdToPayload(cmd, payload, sizeof(payload))) return;
+    char payload[128];
+    if (!cmdToPayload(cmd, rfGetRSSI(), payload, sizeof(payload))) return;
 
     Serial.printf("[FAN] RX → MQTT: %s : %s\n", fan->topic, payload);
     if (s_client && s_client->connected()) {
