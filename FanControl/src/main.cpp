@@ -8,6 +8,7 @@
 #include "fan_handler.h"
 #include "lamp_handler.h"
 #include "bresser_handler.h"
+#include "binary_clock_handler.h"
 
 WiFiClient   wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -43,6 +44,7 @@ void setup() {
     // Antenne als die 868 Helix Antenne, inkl. Groundplane.
     // bresserInit(mqttClient);
     ota.init();
+    binaryClockInit();
 }
 
 void loop() {
@@ -57,4 +59,5 @@ void loop() {
     lampLoop();             // (Erweiterungspunkt)
     // bresserLoop();          // Bresser 868MHz RX
     ota.handle();
+    binaryClockLoop();
 }
