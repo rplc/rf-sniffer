@@ -69,7 +69,7 @@ static void reconnect() {
             // retained Messages werden beim ersten client.loop() nach Subscribe
             // zugestellt, s_ignoreUntil muss also bereits aktiv sein
             s_ignoreUntil = millis() + 2000;
-            Serial.println("[MQTT] Ignoriere retained Messages für 1500ms");
+            Serial.println("[MQTT] Ignoriere retained Messages für 2s");
             for (const char* t : FAN_TOPICS) {
                 s_client->subscribe(t);
                 Serial.printf("[MQTT] Abonniert: %s\n", t);
