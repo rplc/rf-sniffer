@@ -90,7 +90,7 @@ void binaryClockOnMqttMessage(const char* topic, const uint8_t* payload, unsigne
         alertBlinkState = false;
     }
     
-    Serial.printf("[CLOCK] MQTT received (%d:%d, clockOn: %s, alert: %s)\n", clockHours, clockMinutes, clockOn ? "true" : "false", alertActive ? "true" : "false");
+    Serial.printf("[CLOCK] MQTT received (%02d:%02d, clockOn: %s, alert: %s)\n", clockHours, clockMinutes, clockOn ? "true" : "false", alertActive ? "true" : "false");
 
     updateDisplay();
 }
