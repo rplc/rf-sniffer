@@ -78,6 +78,9 @@ static void reconnect() {
                 s_client->subscribe(t);
                 Serial.printf("[MQTT] Abonniert: %s\n", t);
             }
+
+            s_client->subscribe(BINARY_CLOCK_MQTT_TOPIC);
+            Serial.printf("[MQTT] Abonniert: %s\n", BINARY_CLOCK_MQTT_TOPIC);
         } else {
             Serial.printf(" fehlgeschlagen (rc=%d), retry in 5s\n", s_client->state());
             delay(5000);
