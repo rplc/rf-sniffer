@@ -4,3 +4,4 @@
 
 void mqttInit(PubSubClient& client);
 void mqttLoop(PubSubClient& client);
+bool mqttConnected();
