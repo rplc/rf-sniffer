@@ -20,6 +20,35 @@ static const FanConfig FANS[] = {
 };
 static constexpr uint8_t FAN_COUNT = sizeof(FANS) / sizeof(FANS[0]);
 
+struct QueueItem {
+    uint8_t fanIdx;
+    uint8_t cmd;
+};
+static constexpr uint8_t FAN_QUEUE_SIZE = 8;
+static QueueItem s_queue[FAN_QUEUE_SIZE];
+static uint8_t   s_qHead  = 0;
+static uint8_t   s_qTail  = 0;
+static uint8_t   s_qCount = 0;
+
+static bool queuePush(uint8_t fanIdx, uint8_t cmd) {
+    if (s_qCount >= FAN_QUEUE_SIZE) {
+        Serial.println("[FAN] Queue voll - Kommando verworfen");
+        return false;
+    }
+    s_queue[s_qTail] = { fanIdx, cmd };
+    s_qTail = (s_qTail + 1) % FAN_QUEUE_SIZE;
+    s_qCount++;
+    return true;
+}
+
+static bool queuePop(QueueItem& out) {
+    if (s_qCount == 0) return false;
+    out = s_queue[s_qHead];
+    s_qHead = (s_qHead + 1) % FAN_QUEUE_SIZE;
+    s_qCount--;
+    return true;
+}
+
 // ─── Fan TX ──────────────────────────────────────────────────────────────────
 
 static void IRAM_ATTR sendFrame(const uint8_t id[2], uint8_t cmd) {
@@ -114,10 +143,17 @@ static uint32_t s_dimmerNext   = 0;
 static uint8_t  s_dimmerFanIdx = 0;
 
 void fanLoop() {
-    if (!s_dimmerActive) return;
-    if (millis() >= s_dimmerNext) {
-        fanSend(FANS[s_dimmerFanIdx].id, FAN_CMD_DIMMER);
-        s_dimmerNext = millis() + FAN_DIMMER_INTERVAL_MS;
+    if (s_dimmerActive) {
+        if (millis() >= s_dimmerNext) {
+            fanSend(FANS[s_dimmerFanIdx].id, FAN_CMD_DIMMER);
+            s_dimmerNext = millis() + FAN_DIMMER_INTERVAL_MS;
+        }
+        return;
+    }
+
+    QueueItem item;
+    if (queuePop(item)) {
+        fanSend(FANS[item.fanIdx].id, item.cmd);
     }
 }
 
@@ -200,7 +236,7 @@ void fanOnMqttMessage(const char* topic, const uint8_t* payload, unsigned int le
 
     if (cmd == 0) return;
     s_dimmerActive = false;
-    fanSend(fan->id, cmd);
+    queuePush(fanIdx, cmd);
 }
 
 void fanInit(PubSubClient& client) {
