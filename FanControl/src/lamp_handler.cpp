@@ -32,6 +32,8 @@ static void IRAM_ATTR lampSendFrame(uint32_t code) {
 
 static void lampSend(uint32_t code) {
     rfEnterTx();
+    rfSetTxPower(TX_POWER_LAMP);
+
     for (uint8_t i = 0; i < LAMP_REPEAT_COUNT; i++) {
         noInterrupts();
         lampSendFrame(code);

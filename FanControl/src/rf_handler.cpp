@@ -181,6 +181,13 @@ void rfEnterRx() {
     }
 }
 
+void rfSetTxPower(uint8_t patableValue) {
+    // Index 0 = Pegel bei OOK-Bit "0" (aus, bleibt immer 0x00),
+    // Index 1 = Pegel bei OOK-Bit "1" (hier konfigurierbar) - siehe rfInit().
+    const uint8_t paTable[2] = { 0x00, patableValue };
+    s_radio.SPIwriteRegisterBurst(RADIOLIB_CC1101_REG_PATABLE, paTable, 2);
+}
+
 // ─── Loop ────────────────────────────────────────────────────────────────────
 
 void rfLoop() {

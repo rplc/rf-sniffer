@@ -13,6 +13,11 @@ bool rfInit(FanRxCallback fanCb, LampRxCallback lampCb);
 void rfEnterTx();   // RX deaktivieren, CC1101 in TX schalten
 void rfEnterRx();   // CC1101 in RX schalten, ISR aktivieren
 
+// Sendeleistung setzen (PATABLE-Rohwert, siehe CC1101_PWR_* in config.h).
+// Kann jederzeit aufgerufen werden (auch während TX-Idle zwischen Frames);
+// wirkt erst auf den nächsten tatsächlich gesendeten Frame.
+void rfSetTxPower(uint8_t patableValue);
+
 // Im loop() aufrufen
 void rfLoop();
 

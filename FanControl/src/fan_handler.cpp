@@ -11,12 +11,13 @@ static PubSubClient* s_client = nullptr;
 struct FanConfig {
     const char* topic;
     uint8_t     id[2];
+    uint8_t     txPower;
 };
 
 static const FanConfig FANS[] = {
-    { MQTT_TOPIC_WZ_TISCH, REMOTE_ID_WZ_TISCH },
-    { MQTT_TOPIC_WZ_COUCH, REMOTE_ID_WZ_COUCH },
-    { MQTT_TOPIC_SZ,       REMOTE_ID_SZ        },
+    { MQTT_TOPIC_WZ_TISCH, REMOTE_ID_WZ_TISCH, TX_POWER_WZ_TISCH },
+    { MQTT_TOPIC_WZ_COUCH, REMOTE_ID_WZ_COUCH, TX_POWER_WZ_COUCH },
+    { MQTT_TOPIC_SZ,       REMOTE_ID_SZ,       TX_POWER_SZ       },
 };
 static constexpr uint8_t FAN_COUNT = sizeof(FANS) / sizeof(FANS[0]);
 
@@ -68,8 +69,10 @@ static void IRAM_ATTR sendFrame(const uint8_t id[2], uint8_t cmd) {
     digitalWrite(CC1101_GDO0_PIN, LOW);  ets_delay_us(FAN_FRAME_GAP);
 }
 
-static void fanSend(const uint8_t id[2], uint8_t cmd) {
+static void fanSend(const uint8_t id[2], uint8_t cmd, uint8_t txPower) {
     rfEnterTx();
+    rfSetTxPower(txPower);
+    
     for (uint8_t i = 0; i < FAN_REPEAT_COUNT; i++) {
         noInterrupts();
         sendFrame(id, cmd);
@@ -145,7 +148,7 @@ static uint8_t  s_dimmerFanIdx = 0;
 void fanLoop() {
     if (s_dimmerActive) {
         if (millis() >= s_dimmerNext) {
-            fanSend(FANS[s_dimmerFanIdx].id, FAN_CMD_DIMMER);
+            fanSend(FANS[s_dimmerFanIdx].id, FAN_CMD_DIMMER, FANS[s_dimmerFanIdx].txPower);
             s_dimmerNext = millis() + FAN_DIMMER_INTERVAL_MS;
         }
         return;
@@ -153,7 +156,7 @@ void fanLoop() {
 
     QueueItem item;
     if (queuePop(item)) {
-        fanSend(FANS[item.fanIdx].id, item.cmd);
+        fanSend(FANS[item.fanIdx].id, item.cmd, FANS[item.fanIdx].txPower);
     }
 }
 

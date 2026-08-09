@@ -9,6 +9,22 @@
 #define REMOTE_ID_WZ_COUCH  { 0x17, 0x1D }   // Remote B - WZ Couch
 #define REMOTE_ID_SZ        { 0x9A, 0xA7 }   // Remote C - Schlafzimmer
 
+// ─── TX-Sendeleistung (CC1101 PATABLE-Rohwerte, 433MHz ASK/OOK) ──────────────
+// Werte aus der ueblichen ELECHOUSE-CC1101 PA_TABLE fuer 433MHz. 0xC0 (10dBm)
+// war der bisherige Fixwert fuer alle Fans.
+#define CC1101_PWR_MINUS30DBM 0x12
+#define CC1101_PWR_MINUS20DBM 0x0E
+#define CC1101_PWR_MINUS15DBM 0x1D
+#define CC1101_PWR_MINUS10DBM 0x34
+#define CC1101_PWR_0DBM       0x60
+#define CC1101_PWR_5DBM       0x84
+#define CC1101_PWR_7DBM       0xC8
+#define CC1101_PWR_10DBM      0xC0
+
+#define TX_POWER_WZ_TISCH   CC1101_PWR_10DBM
+#define TX_POWER_WZ_COUCH   CC1101_PWR_MINUS10DBM
+#define TX_POWER_SZ         CC1101_PWR_10DBM
+
 // ─── CC1101 Pins (ESP32) ─────────────────────────────────────────────────────
 #define CC1101_SCK_PIN   18
 #define CC1101_MISO_PIN  19
@@ -75,6 +91,7 @@
 #define LAMP_READING_BRIGHT_DOWN 4835522
 
 // ─── Lamp RF-Timing (µs) ─────────────────────────────────────────────────────
+#define TX_POWER_LAMP       CC1101_PWR_10DBM
 // Protokoll 2 kompatibel: Bit-Wert im HIGH-Puls
 // TX-Werte mit ets_delay_us Overhead-Kompensation:
 #define LAMP_TX_SHORT       228   // 1x Basis-Puls TX (nominal 248µs)

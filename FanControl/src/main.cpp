@@ -19,7 +19,6 @@ OTASetup ota;
 // Letzte Absicherung/Power Cycle; Hängt loop() irgendwo fest (i.e.
 // esp_task_wdt_reset wird nicht gecalled), greift der WDT und der ESP startet neu.
 static const uint32_t WDT_TIMEOUT_S = 60;
-
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 
 static bool wifiConnect() {
