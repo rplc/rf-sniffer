@@ -22,7 +22,7 @@
 #define CC1101_PWR_10DBM      0xC0
 
 #define TX_POWER_WZ_TISCH   CC1101_PWR_10DBM
-#define TX_POWER_WZ_COUCH   CC1101_PWR_MINUS10DBM
+#define TX_POWER_WZ_COUCH   CC1101_PWR_0DBM
 #define TX_POWER_SZ         CC1101_PWR_10DBM
 
 // ─── CC1101 Pins (ESP32) ─────────────────────────────────────────────────────
